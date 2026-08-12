@@ -1,0 +1,267 @@
+:root {
+  font-family: "Geneva", "Tahoma", sans-serif;
+  color: #c7c7c7;
+  background: #171717;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  min-width: 550px;
+  min-height: 406px;
+  background: #171717;
+  user-select: none;
+}
+
+#webamp-container {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+#webamp-container #webamp {
+  top: 0 !important;
+  left: 0 !important;
+}
+
+/* Webamp supplies the authentic Winamp 2 sprite skin and also serves as the
+   native frameless window chrome. */
+#webamp-container > div { max-width: 100%; }
+
+.search-dialog[hidden] { display: none; }
+
+.search-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 200000;
+  display: grid;
+  place-items: center;
+  padding: 14px;
+  background: rgb(0 0 0 / 64%);
+  user-select: none;
+}
+
+.search-panel {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-rows: 18px auto 18px 1fr 25px;
+  border: 1px solid #08090d;
+  background: #25283b;
+  box-shadow:
+    inset 1px 1px 0 #666b82,
+    inset -1px -1px 0 #0c0d14,
+    3px 3px 0 rgb(0 0 0 / 70%);
+  color: #c5c8d1;
+  font: 9px/1.2 "Tahoma", "Arial Narrow", sans-serif;
+  image-rendering: pixelated;
+}
+
+.search-panel header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 3px 2px 5px;
+  border-bottom: 1px solid #090a10;
+  background: #25283b;
+  color: #bec1ca;
+  font-weight: 700;
+  letter-spacing: .6px;
+  text-shadow: 1px 1px #050505;
+}
+
+.search-panel .title-rule {
+  flex: 1 1 20px;
+  height: 8px;
+  background: repeating-linear-gradient(
+    to bottom,
+    #0a0b11 0,
+    #0a0b11 1px,
+    #8a8051 1px,
+    #8a8051 2px,
+    #3e4254 2px,
+    #3e4254 3px,
+    #141621 3px,
+    #141621 5px
+  );
+}
+
+#search-title {
+  flex: 0 0 auto;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.search-panel button,
+.search-panel input {
+  border-radius: 0;
+  font: inherit;
+}
+
+.search-panel button {
+  min-height: 18px;
+  padding: 1px 8px;
+  border: 1px solid #0a0b11;
+  outline: 1px solid #666b80;
+  background: linear-gradient(#50546a, #303347);
+  box-shadow:
+    inset 1px 1px #858a9e,
+    inset -1px -1px #161722;
+  color: #e0e1e5;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  text-shadow: 1px 1px #111;
+  cursor: default;
+}
+
+.search-panel button:active {
+  background: #303347;
+  box-shadow: inset 1px 1px #12131b, inset -1px -1px #74798e;
+}
+
+.search-panel button:disabled {
+  color: #777b8d;
+  text-shadow: 1px 1px #1c1e2b;
+}
+
+#search-close {
+  flex: 0 0 10px;
+  width: 10px;
+  min-height: 10px;
+  height: 10px;
+  margin-left: 1px;
+  padding: 0;
+  outline: 0;
+  border-color: #111219;
+  box-shadow: inset 1px 1px #9397a8, inset -1px -1px #181923;
+  color: #111219;
+  font: 700 9px/7px "Tahoma", sans-serif;
+  text-shadow: 1px 1px #8d91a1;
+}
+
+#spotify-search-form {
+  margin: 0 5px;
+  padding: 8px 7px 7px;
+  border-right: 1px solid #11131c;
+  border-bottom: 1px solid #11131c;
+  border-left: 1px solid #4d5165;
+  background: #292c40;
+}
+
+#spotify-search-form label {
+  display: block;
+  margin-bottom: 4px;
+  color: #969aac;
+  letter-spacing: .4px;
+}
+
+.search-input-row {
+  display: grid;
+  grid-template-columns: 1fr 58px;
+  gap: 5px;
+}
+
+#spotify-search-input {
+  min-width: 0;
+  height: 20px;
+  padding: 2px 4px;
+  border: 1px solid #050607;
+  outline: none;
+  background: #000;
+  box-shadow: inset 1px 1px #08090d, 0 0 0 1px #62667b;
+  color: #00f000;
+  font: 10px/14px "Tahoma", sans-serif;
+  caret-color: #00ff00;
+  user-select: text;
+}
+
+#search-status {
+  margin: 3px 7px 2px;
+  padding: 2px 5px;
+  overflow: hidden;
+  background: #08090c;
+  color: #858a9d;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#search-status[data-state="loading"] { color: #f1ed35; }
+#search-status[data-state="success"] { color: #00f000; }
+#search-status[data-state="error"] { color: #ff4b55; }
+
+#search-results {
+  margin: 0 7px 5px;
+  overflow: auto;
+  border: 1px solid #050608;
+  outline: 1px solid #555a70;
+  background: #000;
+  color: #d6d7dc;
+  scrollbar-color: #50546a #171923;
+}
+
+.search-result {
+  display: grid;
+  grid-template-columns: 13px 18px 1fr 32px;
+  align-items: center;
+  min-height: 27px;
+  padding: 2px 4px;
+  border-bottom: 1px solid #181a26;
+}
+
+.search-result:hover { background: #00005a; }
+
+.search-result:has(input:checked) {
+  background: #000082;
+  color: white;
+}
+
+.search-result input {
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  margin: 0;
+  border: 1px solid #71768a;
+  background: #11131b;
+}
+
+.search-result input:checked {
+  border-color: #a9adbb;
+  background: #00d800;
+  box-shadow: inset 1px 1px #7dff7d;
+}
+
+.search-result .result-number { color: #73788b; }
+.search-result .result-copy { min-width: 0; }
+.search-result strong,
+.search-result small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-result strong { color: #e9e9ec; font-weight: 400; }
+.search-result small { margin-top: 1px; color: #808598; font-size: 8px; }
+.search-result time { color: #00f000; text-align: right; }
+.search-result:has(input:checked) small { color: #aeb2c3; }
+
+.search-panel footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 7px 4px;
+  border-top: 1px solid #42465a;
+  color: #7f8497;
+  font-size: 8px;
+}
+
+#search-add { width: 62px; }
