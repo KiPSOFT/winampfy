@@ -1,7 +1,7 @@
 {
   "name": "winampfy",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A personal retro desktop player powered by librespot",
   "type": "module",
   "scripts": {
