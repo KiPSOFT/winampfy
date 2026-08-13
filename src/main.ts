@@ -731,7 +731,7 @@ webamp.store.subscribe(() => {
   localStorage.setItem(PLAYLIST_STORAGE_KEY, serialized);
 });
 
-webamp.onClose(() => getCurrentWindow().close());
+webamp.onClose(() => void invoke("quit_app"));
 webamp.onMinimize(() => getCurrentWindow().hide());
 
 void webamp.renderInto(document.querySelector<HTMLElement>("#webamp-container")!).then(() => {

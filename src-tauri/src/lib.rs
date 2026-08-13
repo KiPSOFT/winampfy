@@ -21,6 +21,11 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -75,6 +80,7 @@ pub fn run() {
             spotify_search,
             spotify_playlists,
             spotify_playlist_tracks,
+            quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("Winampfy could not start");
