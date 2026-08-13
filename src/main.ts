@@ -1,10 +1,13 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 import Webamp from "webamp";
 import "./styles.css";
 
 type PlaybackState = "disconnected" | "connecting" | "ready" | "playing" | "paused" | "ended" | "error";
 type MediaCallback = (...args: unknown[]) => void;
+type AppUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
 
 interface PlayerStatus {
   state: PlaybackState;
@@ -301,7 +304,113 @@ app.innerHTML = `
       </footer>
     </section>
   </div>
+  <div id="update-dialog" class="search-dialog update-dialog" hidden>
+    <section class="search-panel update-panel" role="dialog" aria-modal="true" aria-labelledby="update-title">
+      <header>
+        <i class="title-rule" aria-hidden="true"></i>
+        <span id="update-title">WINAMPFY UPDATE</span>
+        <i class="title-rule" aria-hidden="true"></i>
+        <button id="update-close" type="button" aria-label="Kapat">×</button>
+      </header>
+      <div class="update-content">
+        <strong id="update-version"></strong>
+        <p id="update-message"></p>
+        <pre id="update-notes" hidden></pre>
+        <div id="update-progress" hidden><span></span></div>
+        <div id="update-status" data-state="idle"></div>
+      </div>
+      <footer>
+        <button id="update-later" type="button">NOT NOW</button>
+        <button id="update-install" type="button">UPDATE NOW</button>
+      </footer>
+    </section>
+  </div>
 `;
+
+let updateCheckStarted = false;
+
+async function checkForAppUpdate() {
+  if (window.location.hostname === "localhost" || updateCheckStarted) return;
+  updateCheckStarted = true;
+  try {
+    const update = await check();
+    if (update) showUpdateDialog(update);
+  } catch (error) {
+    // Update checks should never interrupt music playback. A missing release
+    // manifest or an offline connection will simply be retried next launch.
+    console.warn("Winampfy update check failed", error);
+  }
+}
+
+function showUpdateDialog(update: AppUpdate) {
+  const dialog = document.querySelector<HTMLElement>("#update-dialog")!;
+  const closeButton = document.querySelector<HTMLButtonElement>("#update-close")!;
+  const laterButton = document.querySelector<HTMLButtonElement>("#update-later")!;
+  const installButton = document.querySelector<HTMLButtonElement>("#update-install")!;
+  const version = document.querySelector<HTMLElement>("#update-version")!;
+  const message = document.querySelector<HTMLElement>("#update-message")!;
+  const notes = document.querySelector<HTMLElement>("#update-notes")!;
+  const progress = document.querySelector<HTMLElement>("#update-progress")!;
+  const progressBar = progress.querySelector<HTMLElement>("span")!;
+  const status = document.querySelector<HTMLElement>("#update-status")!;
+
+  version.textContent = `WINAMPFY ${update.version}`;
+  message.textContent = "Yeni sürüm hazır. Şimdi indirip kurmak ister misiniz?";
+  notes.textContent = update.body ?? "";
+  notes.hidden = notes.textContent.trim().length === 0;
+  progress.hidden = true;
+  progressBar.style.width = "0%";
+  status.textContent = "Güncelleme güvenli bir imzayla doğrulanacaktır.";
+  status.dataset.state = "idle";
+  dialog.hidden = false;
+
+  const dismiss = () => {
+    dialog.hidden = true;
+    void update.close();
+  };
+  closeButton.onclick = dismiss;
+  laterButton.onclick = dismiss;
+  installButton.onclick = async () => {
+    closeButton.disabled = true;
+    laterButton.disabled = true;
+    installButton.disabled = true;
+    progress.hidden = false;
+    status.dataset.state = "loading";
+    status.textContent = "İNDİRİLİYOR: 0%";
+
+    let downloaded = 0;
+    let total = 0;
+    try {
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength ?? 0;
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+        } else if (event.event === "Finished") {
+          progressBar.style.width = "100%";
+          status.textContent = "KURULDU — YENİDEN BAŞLATILIYOR";
+          return;
+        }
+
+        if (total > 0) {
+          const percent = Math.min(100, Math.round((downloaded / total) * 100));
+          progressBar.style.width = `${percent}%`;
+          status.textContent = `İNDİRİLİYOR: ${percent}%`;
+        } else {
+          status.textContent = "İNDİRİLİYOR...";
+        }
+      });
+      await relaunch();
+    } catch (error) {
+      status.dataset.state = "error";
+      status.textContent = `GÜNCELLEME HATASI: ${String(error)}`;
+      closeButton.disabled = false;
+      laterButton.disabled = false;
+      installButton.disabled = false;
+      installButton.textContent = "RETRY";
+    }
+  };
+}
 
 webamp = new Webamp({
   __customMediaClass: LibrespotMedia,
@@ -754,6 +863,7 @@ void webamp.renderInto(document.querySelector<HTMLElement>("#webamp-container")!
   ).fontFamily;
   document.documentElement.style.setProperty("--playlist-font", playlistFont);
   syncWebampMetadata(latestStatus);
+  window.setTimeout(() => void checkForAppUpdate(), 1500);
 
   // In Winamp the ADD button normally opens a second tiny menu before URL can
   // be selected. Winampfy has one add source, so a single ADD click opens the

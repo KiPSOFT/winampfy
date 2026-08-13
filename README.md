@@ -40,6 +40,7 @@ Winampfy combines Webamp's faithful Winamp 2.x interface with a native Tauri she
 - Play, pause, previous, next, seek, volume, shuffle and repeat controls
 - Playlist persistence between launches
 - Minimize-to-tray, tray restore and quit actions
+- Signed automatic updates from GitHub Releases
 - 320 kbps playback and a local audio cache
 
 ## Downloads
@@ -100,7 +101,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow creates a public GitHub Release and attaches the generated installers. It can also be started manually from the Actions tab.
+The workflow creates a public GitHub Release, attaches the generated installers and publishes the signed `latest.json` updater manifest. It can also be started manually from the Actions tab.
+
+Automatic updates require a Tauri updater signing key. Keep the private key outside Git and add its complete contents as the `TAURI_SIGNING_PRIVATE_KEY` repository secret. The matching public key is embedded in `src-tauri/tauri.conf.json`. Losing the private key prevents future updates for existing installations.
 
 ## Architecture
 

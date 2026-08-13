@@ -31,6 +31,8 @@ pub fn run() {
     tauri::Builder::default()
         .manage(PlayerState::new())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Keep the tray icon independent from the OS/application icon cache.
             // Embedding the PNG also makes dev and packaged builds use exactly

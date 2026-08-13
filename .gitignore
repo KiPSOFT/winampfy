@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Local updater signing key — never commit or share this directory
+.tauri/
+
 # Working icon sources not used by the application bundle
 src-tauri/icons/*-source.png
 src-tauri/icons/winampfy-retro.png

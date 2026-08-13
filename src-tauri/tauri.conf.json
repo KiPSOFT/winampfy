@@ -30,6 +30,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -38,5 +39,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaW5pIHB1YmxpYyBrZXk6IDdFMkMwOUREN0Y4MTlFQTIKUldTaW5vRi8zUWtzZnFtdmxmMGpSWVYxZnlrS2FFeElJNjFsUkxvSzRLOGFCY2o4eG1JK09KVlAK",
+      "endpoints": [
+        "https://github.com/KiPSOFT/winampfy/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

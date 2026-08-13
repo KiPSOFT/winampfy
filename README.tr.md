@@ -40,6 +40,7 @@ Winampfy, Webamp'ın Winamp 2.x arayüzünü native Tauri kabuğu ve librespot �
 - Play, pause, önceki, sonraki, seek, ses, shuffle ve repeat kontrolleri
 - Uygulama kapatılıp açıldığında korunan playlist
 - Sistem tepsisine küçültme, tepsiden geri açma ve çıkış
+- GitHub Releases üzerinden imzalı otomatik güncelleme
 - 320 kbps oynatma ve yerel ses önbelleği
 
 ## İndirme
@@ -100,7 +101,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Workflow herkese açık bir GitHub Release oluşturur ve derlenen kurulum dosyalarını ekler. Actions sekmesinden elle de başlatılabilir.
+Workflow herkese açık bir GitHub Release oluşturur, derlenen kurulum dosyalarını ekler ve imzalı `latest.json` güncelleme manifestini yayınlar. Actions sekmesinden elle de başlatılabilir.
+
+Otomatik güncellemeler için Tauri updater imza anahtarı gerekir. Özel anahtarı Git dışında tutun ve içeriğinin tamamını `TAURI_SIGNING_PRIVATE_KEY` repository secret'ı olarak ekleyin. Eşleşen public key `src-tauri/tauri.conf.json` içine gömülüdür. Özel anahtar kaybedilirse mevcut kurulumlara yeni güncelleme yayınlanamaz.
 
 ## Mimari
 
