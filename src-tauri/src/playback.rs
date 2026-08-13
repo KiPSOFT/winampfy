@@ -10,7 +10,7 @@ use librespot::{
         session::Session,
     },
     metadata::audio::UniqueFields,
-    metadata::{Metadata, Track},
+    metadata::{Metadata, Playlist, Track},
     playback::{
         audio_backend,
         config::{AudioFormat, Bitrate, PlayerConfig},
@@ -18,8 +18,9 @@ use librespot::{
         player::{Player, PlayerEvent},
     },
 };
+use protobuf::Message;
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, ipc::Channel};
 use tokio::sync::RwLock;
 
 const DEVICE_NAME: &str = "Winampfy Desktop";
@@ -44,6 +45,24 @@ pub struct SpotifySearchTrack {
     artist: String,
     album: String,
     duration_ms: u32,
+}
+
+#[derive(Clone, Serialize)]
+pub struct SpotifyPlaylistSummary {
+    uri: String,
+    name: String,
+    owner: String,
+    track_count: u32,
+    is_public: bool,
+    is_collaborative: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct PlaylistLoadProgress {
+    added: u32,
+    total: u32,
+    remaining: u32,
+    skipped: u32,
 }
 
 impl Default for PlayerStatus {
@@ -192,15 +211,10 @@ async fn initialise_player(
         initial_volume: ((u16::MAX as u32 * 72) / 100) as u16,
         ..ConnectConfig::default()
     };
-    let (spirc, spirc_task) = Spirc::new(
-        connect_config,
-        session.clone(),
-        credentials,
-        player,
-        mixer,
-    )
-        .await
-        .map_err(|error| format!("Spotify oturumu açılamadı: {error}"))?;
+    let (spirc, spirc_task) =
+        Spirc::new(connect_config, session.clone(), credentials, player, mixer)
+            .await
+            .map_err(|error| format!("Spotify oturumu açılamadı: {error}"))?;
 
     spirc
         .activate()
@@ -387,7 +401,10 @@ pub async fn spotify_search(
         .clone()
         .ok_or_else(|| "Önce Spotify hesabınızı bağlayın".to_string())?;
 
-    let search_uri = format!("spotify:search:{}", query.split_whitespace().collect::<Vec<_>>().join("+"));
+    let search_uri = format!(
+        "spotify:search:{}",
+        query.split_whitespace().collect::<Vec<_>>().join("+")
+    );
     let context = session
         .spclient()
         .get_context(&search_uri)
@@ -427,6 +444,156 @@ pub async fn spotify_search(
     }
 
     Ok(results)
+}
+
+#[tauri::command]
+pub async fn spotify_playlists(
+    query: Option<String>,
+    limit: Option<u16>,
+    state: State<'_, PlayerState>,
+) -> Result<Vec<SpotifyPlaylistSummary>, String> {
+    let session = connected_session(&state)?;
+    let response = session
+        .spclient()
+        .get_rootlist(0, Some(500))
+        .await
+        .map_err(|error| format!("Playlist listesi alınamadı: {error}"))?;
+    let message = librespot::protocol::playlist4_external::SelectedListContent::parse_from_bytes(
+        response.as_ref(),
+    )
+    .map_err(|error| format!("Playlist listesi okunamadı: {error}"))?;
+    // Rootlists also contain folders and separators. Those entries can have
+    // no playlist revision, which makes the general metadata converter reject
+    // the whole response. Read the protobuf defensively and keep playlist rows.
+    let contents = message.contents.get_or_default();
+
+    let query = query.unwrap_or_default().trim().to_lowercase();
+    let limit = limit.unwrap_or(50).clamp(1, 100) as usize;
+    let mut playlists = contents
+        .items
+        .iter()
+        .zip(contents.meta_items.iter())
+        .filter_map(|(item, meta)| {
+            let uri = item.uri();
+            if !uri.starts_with("spotify:playlist:") {
+                return None;
+            }
+
+            let name = meta.attributes.get_or_default().name().trim();
+            let owner = meta.owner_username().trim();
+            if name.is_empty()
+                || (!query.is_empty()
+                    && !name.to_lowercase().contains(&query)
+                    && !owner.to_lowercase().contains(&query))
+            {
+                return None;
+            }
+
+            Some(SpotifyPlaylistSummary {
+                uri: uri.to_string(),
+                name: name.to_string(),
+                owner: owner.to_string(),
+                track_count: meta.length().max(0) as u32,
+                is_public: item.attributes.get_or_default().public(),
+                is_collaborative: meta.attributes.get_or_default().collaborative(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    playlists.sort_by_key(|playlist| playlist.name.to_lowercase());
+    playlists.truncate(limit);
+    Ok(playlists)
+}
+
+#[tauri::command]
+pub async fn spotify_playlist_tracks(
+    uri: String,
+    on_progress: Channel<PlaylistLoadProgress>,
+    state: State<'_, PlayerState>,
+) -> Result<Vec<SpotifySearchTrack>, String> {
+    let session = connected_session(&state)?;
+    let uri = SpotifyUri::from_uri(&normalise_spotify_uri(&uri)?)
+        .map_err(|error| format!("Playlist URI'si okunamadı: {error}"))?;
+    if !matches!(uri, SpotifyUri::Playlist { .. }) {
+        return Err("Bir Spotify playlist bağlantısı seçin".into());
+    }
+
+    let playlist = Playlist::get(&session, &uri)
+        .await
+        .map_err(|error| format!("Playlist alınamadı: {error}"))?;
+    let track_uris = playlist
+        .tracks()
+        .filter(|uri| matches!(uri, SpotifyUri::Track { .. }))
+        .cloned()
+        .collect::<Vec<_>>();
+    let total = track_uris.len() as u32;
+    let mut tracks = Vec::with_capacity(track_uris.len());
+    let mut skipped = 0u32;
+    let _ = on_progress.send(PlaylistLoadProgress {
+        added: 0,
+        total,
+        remaining: total,
+        skipped,
+    });
+
+    for (index, track_uri) in track_uris.iter().enumerate() {
+        let processed = index as u32 + 1;
+
+        // Removed or region-blocked entries should not prevent the rest of a
+        // playlist from loading.
+        let Ok(track) = Track::get(&session, track_uri).await else {
+            skipped += 1;
+            let _ = on_progress.send(PlaylistLoadProgress {
+                added: tracks.len() as u32,
+                total,
+                remaining: total.saturating_sub(processed),
+                skipped,
+            });
+            continue;
+        };
+        match search_track_from_metadata(track) {
+            Ok(track) => tracks.push(track),
+            Err(_) => skipped += 1,
+        }
+        let _ = on_progress.send(PlaylistLoadProgress {
+            added: tracks.len() as u32,
+            total,
+            remaining: total.saturating_sub(processed),
+            skipped,
+        });
+    }
+
+    if tracks.is_empty() {
+        return Err("Bu playlistte oynatılabilir şarkı bulunamadı".into());
+    }
+    Ok(tracks)
+}
+
+fn connected_session(state: &State<'_, PlayerState>) -> Result<Session, String> {
+    state
+        .session
+        .lock()
+        .map_err(|_| "Spotify session lock failed".to_string())?
+        .clone()
+        .ok_or_else(|| "Önce Spotify hesabınızı bağlayın".to_string())
+}
+
+fn search_track_from_metadata(track: Track) -> Result<SpotifySearchTrack, String> {
+    Ok(SpotifySearchTrack {
+        uri: track
+            .id
+            .to_uri()
+            .map_err(|error| format!("Şarkı URI'si oluşturulamadı: {error}"))?,
+        title: track.name,
+        artist: track
+            .artists
+            .iter()
+            .map(|artist| artist.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        album: track.album.name,
+        duration_ms: track.duration.max(0) as u32,
+    })
 }
 
 fn normalise_spotify_uri(input: &str) -> Result<String, String> {

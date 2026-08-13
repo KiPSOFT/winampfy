@@ -35,6 +35,8 @@ Winampfy combines Webamp's faithful Winamp 2.x interface with a native Tauri she
 - Direct Spotify audio playback powered by librespot
 - Spotify search inside a Winamp-styled dialog
 - Multi-select search results and queue playback
+- Spotify playlist browser with name/owner filtering and direct playlist URL support
+- Replace the current queue from **LIST OPTS → LOAD LIST**, optionally shuffled before loading
 - Play, pause, previous, next, seek, volume, shuffle and repeat controls
 - Playlist persistence between launches
 - Minimize-to-tray, tray restore and quit actions
@@ -55,7 +57,8 @@ The public builds are currently not notarized or signed with a commercial certif
 1. Launch Winampfy and press **Play**, or open **ADD** in the Playlist Editor.
 2. Complete Spotify OAuth in the system browser when prompted.
 3. Press **ADD**, search Spotify, select one or more tracks, and add them to the playlist.
-4. Press **Play** to play the list in order.
+4. To load a Spotify playlist, open **LIST OPTS → LOAD LIST**, select one playlist, optionally enable **SHUFFLE BEFORE LOAD**, and press **LOAD**.
+5. Press **Play** to play the list in order.
 
 Authentication is handled in the browser. Winampfy receives an access token through a localhost OAuth callback; it does not ask for or store your Spotify password.
 

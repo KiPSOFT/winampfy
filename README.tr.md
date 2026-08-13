@@ -35,6 +35,8 @@ Winampfy, Webamp'ın Winamp 2.x arayüzünü native Tauri kabuğu ve librespot �
 - librespot ile doğrudan Spotify ses oynatma
 - Winamp stilindeki pencere içinde Spotify araması
 - Arama sonuçlarından çoklu seçim ve sıralı playlist oynatma
+- Ad/sahip filtresi ve doğrudan playlist URL desteğiyle Spotify playlist tarayıcısı
+- **LIST OPTS → LOAD LIST** üzerinden mevcut listeyi değiştirme ve yüklemeden önce isteğe bağlı karıştırma
 - Play, pause, önceki, sonraki, seek, ses, shuffle ve repeat kontrolleri
 - Uygulama kapatılıp açıldığında korunan playlist
 - Sistem tepsisine küçültme, tepsiden geri açma ve çıkış
@@ -55,7 +57,8 @@ Herkese açık derlemeler şu anda Apple notarization veya ticari kod imzalama s
 1. Winampfy'ı açıp **Play** düğmesine basın veya Playlist Editor'daki **ADD** düğmesini açın.
 2. İstendiğinde sistem tarayıcısında Spotify OAuth girişini tamamlayın.
 3. **ADD** üzerinden Spotify'da arama yapın, bir veya daha fazla şarkı seçip listeye ekleyin.
-4. Listeyi sırayla oynatmak için **Play** düğmesine basın.
+4. Spotify playlist'i yüklemek için **LIST OPTS → LOAD LIST** yolunu açın, tek playlist seçin, isterseniz **SHUFFLE BEFORE LOAD** seçeneğini etkinleştirip **LOAD** düğmesine basın.
+5. Listeyi sırayla oynatmak için **Play** düğmesine basın.
 
 Kimlik doğrulama tarayıcıda yapılır. Winampfy, erişim anahtarını localhost OAuth callback üzerinden alır; Spotify parolanızı istemez veya saklamaz.
 

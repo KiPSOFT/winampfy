@@ -42,17 +42,17 @@ body {
   inset: 0;
   z-index: 200000;
   display: grid;
-  place-items: center;
+  place-items: stretch;
   padding: 14px;
   background: rgb(0 0 0 / 64%);
   user-select: none;
 }
 
 .search-panel {
-  width: 100%;
-  height: 100%;
+  min-width: 0;
+  min-height: 0;
   display: grid;
-  grid-template-rows: 18px auto 18px 1fr 25px;
+  grid-template-rows: 18px auto 18px minmax(0, 1fr) 27px;
   border: 1px solid #08090d;
   background: #25283b;
   box-shadow:
@@ -94,7 +94,8 @@ body {
   );
 }
 
-#search-title {
+#search-title,
+#playlist-search-title {
   flex: 0 0 auto;
   font-size: 9px;
   white-space: nowrap;
@@ -133,7 +134,8 @@ body {
   text-shadow: 1px 1px #1c1e2b;
 }
 
-#search-close {
+#search-close,
+#playlist-search-close {
   flex: 0 0 10px;
   width: 10px;
   min-height: 10px;
@@ -148,7 +150,8 @@ body {
   text-shadow: 1px 1px #8d91a1;
 }
 
-#spotify-search-form {
+#spotify-search-form,
+#spotify-playlist-form {
   margin: 0 5px;
   padding: 8px 7px 7px;
   border-right: 1px solid #11131c;
@@ -157,7 +160,8 @@ body {
   background: #292c40;
 }
 
-#spotify-search-form label {
+#spotify-search-form label,
+#spotify-playlist-form > label {
   display: block;
   margin-bottom: 4px;
   color: #969aac;
@@ -170,7 +174,8 @@ body {
   gap: 5px;
 }
 
-#spotify-search-input {
+#spotify-search-input,
+#spotify-playlist-input {
   min-width: 0;
   height: 20px;
   padding: 2px 4px;
@@ -184,7 +189,8 @@ body {
   user-select: text;
 }
 
-#search-status {
+#search-status,
+#playlist-search-status {
   margin: 3px 7px 2px;
   padding: 2px 5px;
   overflow: hidden;
@@ -195,11 +201,16 @@ body {
   white-space: nowrap;
 }
 
-#search-status[data-state="loading"] { color: #f1ed35; }
-#search-status[data-state="success"] { color: #00f000; }
-#search-status[data-state="error"] { color: #ff4b55; }
+#search-status[data-state="loading"],
+#playlist-search-status[data-state="loading"] { color: #f1ed35; }
+#search-status[data-state="success"],
+#playlist-search-status[data-state="success"] { color: #00f000; }
+#search-status[data-state="error"],
+#playlist-search-status[data-state="error"] { color: #ff4b55; }
 
-#search-results {
+#search-results,
+#playlist-search-results {
+  min-height: 0;
   margin: 0 7px 5px;
   overflow: auto;
   border: 1px solid #050608;
@@ -216,6 +227,10 @@ body {
   min-height: 27px;
   padding: 2px 4px;
   border-bottom: 1px solid #181a26;
+  font-family: var(--playlist-font, Arial, sans-serif);
+  font-size: 9px;
+  line-height: 11px;
+  letter-spacing: .5px;
 }
 
 .search-result:hover { background: #00005a; }
@@ -249,10 +264,13 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.search-result strong { color: #e9e9ec; font-weight: 400; }
-.search-result small { margin-top: 1px; color: #808598; font-size: 8px; }
+.search-result strong { color: #e9e9ec; font: inherit; }
+.search-result small { margin-top: 1px; color: #808598; font: inherit; }
 .search-result time { color: #00f000; text-align: right; }
 .search-result:has(input:checked) small { color: #aeb2c3; }
+
+.playlist-result { grid-template-columns: 13px 18px 1fr 62px; }
+.playlist-result time { font: inherit; }
 
 .search-panel footer {
   display: flex;
@@ -262,6 +280,31 @@ body {
   border-top: 1px solid #42465a;
   color: #7f8497;
   font-size: 8px;
+  background: #25283b;
 }
 
-#search-add { width: 62px; }
+#search-add,
+#playlist-load { width: 62px; }
+
+.playlist-shuffle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #b3b6c3;
+  cursor: default;
+}
+
+.playlist-shuffle input {
+  appearance: none;
+  width: 9px;
+  height: 9px;
+  margin: 0;
+  border: 1px solid #090a0e;
+  outline: 1px solid #686c7d;
+  background: #10121a;
+}
+
+.playlist-shuffle input:checked {
+  background: #00d800;
+  box-shadow: inset 1px 1px #7dff7d;
+}

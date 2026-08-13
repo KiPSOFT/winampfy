@@ -6110,6 +6110,7 @@ dependencies = [
  "librespot",
  "librespot-oauth",
  "log",
+ "protobuf",
  "serde",
  "serde_json",
  "tauri",

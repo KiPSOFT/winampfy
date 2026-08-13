@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Webamp from "webamp";
 import "./styles.css";
@@ -22,6 +22,22 @@ interface SpotifySearchTrack {
   artist: string;
   album: string;
   duration_ms: number;
+}
+
+interface SpotifyPlaylistSummary {
+  uri: string;
+  name: string;
+  owner: string;
+  track_count: number;
+  is_public: boolean;
+  is_collaborative: boolean;
+}
+
+interface PlaylistLoadProgress {
+  added: number;
+  total: number;
+  remaining: number;
+  skipped: number;
 }
 
 interface PlaylistInputTrack {
@@ -245,6 +261,32 @@ app.innerHTML = `
       </footer>
     </section>
   </div>
+  <div id="spotify-playlist-dialog" class="search-dialog" hidden>
+    <section class="search-panel" role="dialog" aria-modal="true" aria-labelledby="playlist-search-title">
+      <header>
+        <i class="title-rule" aria-hidden="true"></i>
+        <span id="playlist-search-title">LOAD LIST // SPOTIFY PLAYLISTS</span>
+        <i class="title-rule" aria-hidden="true"></i>
+        <button id="playlist-search-close" type="button" aria-label="Kapat">×</button>
+      </header>
+      <form id="spotify-playlist-form">
+        <label for="spotify-playlist-input">PLAYLIST ADI VEYA SPOTIFY PLAYLIST URL</label>
+        <div class="search-input-row">
+          <input id="spotify-playlist-input" autocomplete="off" spellcheck="false" />
+          <button id="playlist-search-submit" type="submit">SEARCH</button>
+        </div>
+      </form>
+      <div id="playlist-search-status">Playlistler yükleniyor...</div>
+      <div id="playlist-search-results" role="radiogroup" aria-label="Spotify playlist sonuçları"></div>
+      <footer>
+        <label class="playlist-shuffle">
+          <input id="playlist-shuffle" type="checkbox" />
+          SHUFFLE BEFORE LOAD
+        </label>
+        <button id="playlist-load" type="button" disabled>LOAD</button>
+      </footer>
+    </section>
+  </div>
 `;
 
 webamp = new Webamp({
@@ -404,6 +446,212 @@ function openSpotifySearchDialog(): Promise<PlaylistInputTrack[] | null> {
   });
 }
 
+function isSpotifyPlaylistInput(value: string) {
+  return value.startsWith("spotify:playlist:")
+    || /^https?:\/\/open\.spotify\.com\/playlist\//.test(value);
+}
+
+function shuffleTracks(tracks: PlaylistInputTrack[]) {
+  const shuffled = [...tracks];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const target = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[target]] = [shuffled[target], shuffled[index]];
+  }
+  return shuffled;
+}
+
+function openSpotifyPlaylistDialog(): Promise<PlaylistInputTrack[] | null> {
+  const dialog = document.querySelector<HTMLElement>("#spotify-playlist-dialog")!;
+  const form = document.querySelector<HTMLFormElement>("#spotify-playlist-form")!;
+  const input = document.querySelector<HTMLInputElement>("#spotify-playlist-input")!;
+  const closeButton = document.querySelector<HTMLButtonElement>("#playlist-search-close")!;
+  const submitButton = document.querySelector<HTMLButtonElement>("#playlist-search-submit")!;
+  const loadButton = document.querySelector<HTMLButtonElement>("#playlist-load")!;
+  const shuffle = document.querySelector<HTMLInputElement>("#playlist-shuffle")!;
+  const status = document.querySelector<HTMLElement>("#playlist-search-status")!;
+  const resultsElement = document.querySelector<HTMLElement>("#playlist-search-results")!;
+
+  dialog.hidden = false;
+  input.value = "";
+  shuffle.checked = false;
+  status.textContent = "Playlistler yükleniyor...";
+  status.dataset.state = "loading";
+  resultsElement.replaceChildren();
+  loadButton.disabled = true;
+  window.setTimeout(() => input.focus(), 0);
+
+  return new Promise((resolve) => {
+    let results: SpotifyPlaylistSummary[] = [];
+    let urlSearchTimer: number | null = null;
+    let searchRequestId = 0;
+
+    const finish = (tracks: PlaylistInputTrack[] | null) => {
+      if (urlSearchTimer != null) window.clearTimeout(urlSearchTimer);
+      dialog.hidden = true;
+      form.onsubmit = null;
+      input.oninput = null;
+      closeButton.onclick = null;
+      loadButton.onclick = null;
+      resultsElement.onchange = null;
+      resultsElement.ondblclick = null;
+      dialog.onkeydown = null;
+      resolve(tracks);
+    };
+
+    const ensureSpotifySession = async () => {
+      if (latestStatus.state === "disconnected" || latestStatus.state === "error") {
+        status.textContent = "Spotify hesabına bağlanılıyor...";
+        latestStatus = await invoke<PlayerStatus>("spotify_login");
+      }
+    };
+
+    const renderPlaylists = (playlists: SpotifyPlaylistSummary[]) => {
+      resultsElement.replaceChildren();
+      const fragment = document.createDocumentFragment();
+      playlists.forEach((playlist, index) => {
+        const visibility = playlist.is_collaborative
+          ? "COLLABORATIVE"
+          : playlist.is_public ? "PUBLIC" : "PRIVATE";
+        const row = document.createElement("label");
+        row.className = "search-result playlist-result";
+        row.innerHTML = `
+          <input type="radio" name="spotify-playlist" value="${index}" ${index === 0 ? "checked" : ""} />
+          <span class="result-number">${index + 1}.</span>
+          <span class="result-copy">
+            <strong></strong>
+            <small></small>
+          </span>
+          <time>${playlist.track_count} TRACKS</time>
+        `;
+        row.querySelector("strong")!.textContent = playlist.name;
+        row.querySelector("small")!.textContent = `${visibility} — ${playlist.owner || "Spotify"}`;
+        fragment.append(row);
+      });
+      resultsElement.append(fragment);
+      loadButton.disabled = playlists.length === 0;
+    };
+
+    const searchPlaylists = async (query: string) => {
+      const requestId = ++searchRequestId;
+      submitButton.disabled = true;
+      loadButton.disabled = true;
+      input.disabled = true;
+      status.textContent = "Spotify playlistleri aranıyor...";
+      status.dataset.state = "loading";
+      resultsElement.replaceChildren();
+
+      try {
+        let nextResults: SpotifyPlaylistSummary[];
+        if (isSpotifyPlaylistInput(query)) {
+          nextResults = [{
+            uri: query,
+            name: "Spotify Playlist URL",
+            owner: "Direct link",
+            track_count: 0,
+            is_public: true,
+            is_collaborative: false,
+          }];
+        } else {
+          await ensureSpotifySession();
+          nextResults = await invoke<SpotifyPlaylistSummary[]>("spotify_playlists", {
+            query: query || null,
+            limit: 100,
+          });
+        }
+
+        if (requestId !== searchRequestId) return;
+        results = nextResults;
+        renderPlaylists(results);
+        status.textContent = results.length === 0
+          ? "Eşleşen playlist bulunamadı."
+          : `${results.length} playlist bulundu. Bir playlist seçin.`;
+        status.dataset.state = results.length === 0 ? "error" : "success";
+      } catch (error) {
+        if (requestId !== searchRequestId) return;
+        status.textContent = `Hata: ${String(error)}`;
+        status.dataset.state = "error";
+      } finally {
+        if (requestId !== searchRequestId) return;
+        submitButton.disabled = false;
+        input.disabled = false;
+        input.focus();
+      }
+    };
+
+    const loadSelectedPlaylist = async () => {
+      const selected = resultsElement.querySelector<HTMLInputElement>(
+        'input[name="spotify-playlist"]:checked',
+      );
+      const playlist = selected ? results[Number(selected.value)] : null;
+      if (!playlist) return;
+
+      submitButton.disabled = true;
+      loadButton.disabled = true;
+      input.disabled = true;
+      status.textContent = `${playlist.name} içindeki şarkılar yükleniyor...`;
+      status.dataset.state = "loading";
+
+      try {
+        await ensureSpotifySession();
+        const onProgress = new Channel<PlaylistLoadProgress>();
+        onProgress.onmessage = (progress) => {
+          const skipped = progress.skipped > 0 ? ` • ATLANAN: ${progress.skipped}` : "";
+          status.textContent = `EKLENEN: ${progress.added} / ${progress.total} • KALAN: ${progress.remaining}${skipped}`;
+          status.dataset.state = "loading";
+        };
+        const tracks = await invoke<SpotifySearchTrack[]>("spotify_playlist_tracks", {
+          uri: playlist.uri,
+          onProgress,
+        });
+        const playlistTracks = tracks.map(toPlaylistTrack);
+        finish(shuffle.checked ? shuffleTracks(playlistTracks) : playlistTracks);
+      } catch (error) {
+        status.textContent = `Hata: ${String(error)}`;
+        status.dataset.state = "error";
+        submitButton.disabled = false;
+        loadButton.disabled = false;
+        input.disabled = false;
+      }
+    };
+
+    closeButton.onclick = () => finish(null);
+    dialog.onkeydown = (event) => {
+      if (event.key === "Escape") finish(null);
+    };
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      void searchPlaylists(input.value.trim());
+    };
+    input.oninput = () => {
+      if (urlSearchTimer != null) window.clearTimeout(urlSearchTimer);
+      const query = input.value.trim();
+      if (!isSpotifyPlaylistInput(query)) return;
+      urlSearchTimer = window.setTimeout(() => void searchPlaylists(query), 120);
+    };
+    resultsElement.onchange = () => {
+      loadButton.disabled = !resultsElement.querySelector('input[name="spotify-playlist"]:checked');
+    };
+    resultsElement.ondblclick = (event) => {
+      if ((event.target as HTMLElement).closest(".playlist-result")) {
+        void loadSelectedPlaylist();
+      }
+    };
+    loadButton.onclick = () => void loadSelectedPlaylist();
+
+    void searchPlaylists("");
+  });
+}
+
+function replacePlaylistTracks(tracks: PlaylistInputTrack[]) {
+  if (!webamp || tracks.length === 0) return;
+  const ids = webamp.getPlaylistTracks().map((track) => track.id);
+  if (ids.length > 0) {
+    webamp.store.dispatch({ type: "REMOVE_TRACKS", ids });
+  }
+  webamp.appendTracks(tracks);
+  webamp.setCurrentTrack(0);
+}
+
 function removeConnectionPlaceholder() {
   if (!webamp) return;
   const placeholder = webamp.getPlaylistTracks().find((track) => track.url === "spotify:current");
@@ -425,9 +673,43 @@ webamp.store.dispatch = ((action: Parameters<typeof originalDispatch>[0]) => {
   return originalDispatch(action);
 }) as typeof originalDispatch;
 
+let lastScrolledTrackId: number | null = null;
+
+function scrollCurrentTrackIntoView() {
+  if (!webamp) return;
+  const state = webamp.store.getState();
+  const currentTrackId = state.playlist.currentTrack;
+  if (currentTrackId == null) {
+    lastScrolledTrackId = null;
+    return;
+  }
+  if (currentTrackId === lastScrolledTrackId) return;
+  lastScrolledTrackId = currentTrackId;
+
+  const currentIndex = state.playlist.trackOrder.indexOf(currentTrackId);
+  if (currentIndex < 0) return;
+
+  // These are Webamp's Winamp playlist dimensions: the base content area is
+  // 58 px, each vertical resize segment adds 29 px, and one row is 13 px.
+  const playlistHeightSegments = state.windows.genWindows.playlist?.size[1] ?? 0;
+  const visibleTracks = Math.max(1, Math.floor((58 + 29 * playlistHeightSegments) / 13));
+  const overflow = Math.max(0, state.playlist.trackOrder.length - visibleTracks);
+  if (overflow === 0) return;
+
+  const currentOffset = Math.round((state.display.playlistScrollPosition / 100) * overflow);
+  if (currentIndex >= currentOffset && currentIndex < currentOffset + visibleTracks) return;
+
+  const targetOffset = Math.max(0, Math.min(overflow, currentIndex - Math.floor(visibleTracks / 2)));
+  webamp.store.dispatch({
+    type: "SET_PLAYLIST_SCROLL_POSITION",
+    position: (targetOffset / overflow) * 100,
+  });
+}
+
 let lastSavedPlaylist = JSON.stringify(savedPlaylist);
 webamp.store.subscribe(() => {
   if (!webamp) return;
+  scrollCurrentTrackIntoView();
   const playlist = webamp
     .getPlaylistTracks()
     .filter((track) => track.url !== "spotify:current")
@@ -453,6 +735,10 @@ webamp.onClose(() => getCurrentWindow().close());
 webamp.onMinimize(() => getCurrentWindow().hide());
 
 void webamp.renderInto(document.querySelector<HTMLElement>("#webamp-container")!).then(() => {
+  const playlistFont = getComputedStyle(
+    document.querySelector<HTMLElement>("#playlist-window")!,
+  ).fontFamily;
+  document.documentElement.style.setProperty("--playlist-font", playlistFont);
   syncWebampMetadata(latestStatus);
 
   // In Winamp the ADD button normally opens a second tiny menu before URL can
@@ -467,6 +753,20 @@ void webamp.renderInto(document.querySelector<HTMLElement>("#webamp-container")!
     event.stopImmediatePropagation();
     void openSpotifySearchDialog().then((tracks) => {
       if (tracks?.length) webamp?.appendTracks(tracks);
+    });
+  }, true);
+
+  // LIST OPTS → LOAD LIST normally opens a local file picker. Winampfy uses
+  // that authentic Winamp control as the entry point for Spotify playlists.
+  document.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const loadListButton = target.closest<HTMLElement>("#playlist-list-menu .load-list");
+    if (!loadListButton) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void openSpotifyPlaylistDialog().then((tracks) => {
+      if (tracks?.length) replacePlaylistTracks(tracks);
     });
   }, true);
 
