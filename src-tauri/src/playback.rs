@@ -36,6 +36,7 @@ pub struct PlayerStatus {
     artist: Option<String>,
     duration_ms: Option<u32>,
     position_ms: Option<u32>,
+    advance_sequence: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -75,6 +76,7 @@ impl Default for PlayerStatus {
             artist: None,
             duration_ms: None,
             position_ms: None,
+            advance_sequence: 0,
         }
     }
 }
@@ -235,6 +237,7 @@ async fn watch_player_events(
     mut events: librespot::playback::player::PlayerEventChannel,
     status: Arc<RwLock<PlayerStatus>>,
 ) {
+    let mut last_advance_request_id = None;
     while let Some(event) = events.recv().await {
         let mut current = status.write().await;
         match event {
@@ -262,13 +265,22 @@ async fn watch_player_events(
                 current.state = "ready".into();
                 current.message = "Oynatma durdu".into();
             }
-            PlayerEvent::EndOfTrack { .. } => {
+            PlayerEvent::EndOfTrack {
+                play_request_id, ..
+            } => {
                 current.state = "ended".into();
                 current.message = "Parça tamamlandı".into();
+                record_advance(&mut current, &mut last_advance_request_id, play_request_id);
             }
-            PlayerEvent::Unavailable { .. } => {
-                current.state = "error".into();
-                current.message = "Bu parça oynatılamıyor".into();
+            PlayerEvent::Unavailable {
+                play_request_id, ..
+            } => {
+                // An unavailable or region-blocked item is a track-level
+                // failure, not a broken Spotify session. Signal the frontend
+                // to skip it while keeping real connection errors separate.
+                current.state = "ended".into();
+                current.message = "Bu parça oynatılamıyor — atlanıyor".into();
+                record_advance(&mut current, &mut last_advance_request_id, play_request_id);
             }
             PlayerEvent::SessionDisconnected { .. } => {
                 current.state = "error".into();
@@ -277,6 +289,14 @@ async fn watch_player_events(
             _ => {}
         }
     }
+}
+
+fn record_advance(status: &mut PlayerStatus, last_request_id: &mut Option<u64>, request_id: u64) {
+    if *last_request_id == Some(request_id) {
+        return;
+    }
+    *last_request_id = Some(request_id);
+    status.advance_sequence = status.advance_sequence.wrapping_add(1);
 }
 
 fn artist_name(fields: &UniqueFields) -> Option<String> {
@@ -624,7 +644,20 @@ fn normalise_spotify_uri(input: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalise_spotify_uri;
+    use super::{PlayerStatus, normalise_spotify_uri, record_advance};
+
+    #[test]
+    fn advances_once_per_play_request() {
+        let mut status = PlayerStatus::default();
+        let mut last_request_id = None;
+
+        record_advance(&mut status, &mut last_request_id, 42);
+        record_advance(&mut status, &mut last_request_id, 42);
+        assert_eq!(status.advance_sequence, 1);
+
+        record_advance(&mut status, &mut last_request_id, 43);
+        assert_eq!(status.advance_sequence, 2);
+    }
 
     #[test]
     fn keeps_spotify_uri() {

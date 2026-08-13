@@ -14,6 +14,7 @@ interface PlayerStatus {
   artist: string | null;
   duration_ms: number | null;
   position_ms: number | null;
+  advance_sequence: number;
 }
 
 interface SpotifySearchTrack {
@@ -59,6 +60,7 @@ const disconnectedStatus: PlayerStatus = {
   artist: null,
   duration_ms: null,
   position_ms: null,
+  advance_sequence: 0,
 };
 
 const PLAYLIST_STORAGE_KEY = "winampfy.playlist.v1";
@@ -74,6 +76,8 @@ class LibrespotMedia {
   private analyser = this.context.createAnalyser();
   private currentUrl = "spotify:current";
   private pollTimer: number;
+  private pollInFlight = false;
+  private lastAdvanceSequence = 0;
 
   constructor() {
     this.analyser.fftSize = 256;
@@ -86,6 +90,8 @@ class LibrespotMedia {
   }
 
   private async poll() {
+    if (this.pollInFlight) return;
+    this.pollInFlight = true;
     try {
       const previous = latestStatus;
       latestStatus = await invoke<PlayerStatus>("player_status");
@@ -93,12 +99,20 @@ class LibrespotMedia {
       if (latestStatus.state === "playing" && previous.state !== "playing") {
         this.emit("playing");
       }
-      if (latestStatus.state === "ended" && previous.state !== "ended") {
+      // EndOfTrack can be followed by Stopped faster than this status poll.
+      // The monotonic sequence makes the advance durable even if that
+      // transient `ended` state is never observed. Unavailable tracks use the
+      // same signal so one bad playlist entry cannot stop the whole queue.
+      if (latestStatus.advance_sequence !== this.lastAdvanceSequence) {
+        this.lastAdvanceSequence = latestStatus.advance_sequence;
         this.emit("ended");
       }
       this.emit("timeupdate");
       syncWebampMetadata(latestStatus);
-    } catch {}
+    } catch {
+    } finally {
+      this.pollInFlight = false;
+    }
   }
 
   on(event: string, callback: MediaCallback) {
