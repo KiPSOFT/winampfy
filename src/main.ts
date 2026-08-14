@@ -6,7 +6,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import Webamp from "webamp";
 import "./styles.css";
 
-type PlaybackState = "disconnected" | "connecting" | "ready" | "playing" | "paused" | "ended" | "error";
+type PlaybackState = "disconnected" | "connecting" | "loading" | "ready" | "playing" | "paused" | "ended" | "error";
 type MediaCallback = (...args: unknown[]) => void;
 type AppUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
 
@@ -16,8 +16,10 @@ interface PlayerStatus {
   message: string;
   track_title: string | null;
   artist: string | null;
+  track_uri: string | null;
   duration_ms: number | null;
   position_ms: number | null;
+  track_sequence: number;
   advance_sequence: number;
 }
 
@@ -78,8 +80,10 @@ const disconnectedStatus: PlayerStatus = {
   message: "Press Play to connect Spotify Premium",
   track_title: null,
   artist: null,
+  track_uri: null,
   duration_ms: null,
   position_ms: null,
+  track_sequence: 0,
   advance_sequence: 0,
 };
 
@@ -104,6 +108,8 @@ class LibrespotMedia {
   private pollTimer: number;
   private pollInFlight = false;
   private lastAdvanceSequence = 0;
+  private loadGeneration = 0;
+  private loadingTrack = false;
   private desiredVolume: number | null = null;
   private appliedVolume = 72;
   private volumeUpdateInFlight = false;
@@ -152,10 +158,12 @@ class LibrespotMedia {
   }
 
   timeElapsed() {
+    if (this.loadingTrack) return 0;
     return (latestStatus.position_ms ?? 0) / 1000;
   }
 
   duration() {
+    if (this.loadingTrack) return 0;
     return (latestStatus.duration_ms ?? 0) / 1000;
   }
 
@@ -183,19 +191,76 @@ class LibrespotMedia {
     void invoke("player_seek", { positionMs });
   }
 
+  private async waitForTrackChange(trackSequence: number, loadGeneration: number) {
+    const deadline = Date.now() + 12_000;
+    while (this.loadGeneration === loadGeneration && Date.now() < deadline) {
+      if (latestStatus.track_sequence !== trackSequence && latestStatus.duration_ms != null) {
+        return true;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+    return false;
+  }
+
   async loadFromUrl(url: string, autoPlay: boolean) {
+    const loadGeneration = ++this.loadGeneration;
     this.currentUrl = url;
     activeTrackUrl = url;
+    lastMetadataKey = "";
+    this.loadingTrack = true;
     this.emit("waiting");
-    if (url !== "spotify:current") {
-      if (latestStatus.state === "disconnected" || latestStatus.state === "error") {
-        latestStatus = await invoke<PlayerStatus>("spotify_login");
+    let waiting = true;
+    const releaseWaiting = () => {
+      if (!waiting) return;
+      waiting = false;
+      this.emit("stopWaiting");
+    };
+    try {
+      if (url !== "spotify:current") {
+        if (latestStatus.state === "disconnected" || latestStatus.state === "error") {
+          latestStatus = await invoke<PlayerStatus>("spotify_login");
+        }
+
+        const trackSequence = latestStatus.track_sequence;
+        latestStatus = {
+          ...latestStatus,
+          state: "loading",
+          message: "Parça yükleniyor",
+          track_title: null,
+          artist: null,
+          track_uri: null,
+          duration_ms: null,
+          position_ms: 0,
+        };
+        this.emit("timeupdate");
+        await invoke("player_load_uri", { uri: url, autoPlay });
+        // The command has been accepted. Metadata can arrive later, but the
+        // rest of Winamp must remain interactive while we wait for it.
+        releaseWaiting();
+
+        const loaded = await this.waitForTrackChange(trackSequence, loadGeneration);
+        if (this.loadGeneration !== loadGeneration) return;
+        if (!loaded) {
+          console.warn("Winampfy timed out while waiting for track metadata", url);
+          return;
+        }
       }
-      await invoke("player_load_uri", { uri: url, autoPlay });
+      releaseWaiting();
+      this.loadingTrack = false;
+      this.emit("fileLoaded");
+      this.emit("timeupdate");
+      if (autoPlay && url === "spotify:current") await this.play();
+    } catch (error) {
+      console.error("Winampfy could not load the requested track", error);
+    } finally {
+      if (this.loadGeneration === loadGeneration) {
+        this.loadingTrack = false;
+        this.emit("timeupdate");
+      }
+      // Webamp blocks all controls between waiting/stopWaiting. Always release
+      // that lock, including failed, timed-out and superseded load requests.
+      releaseWaiting();
     }
-    this.emit("fileLoaded");
-    this.emit("stopWaiting");
-    if (autoPlay && url === "spotify:current") await this.play();
   }
 
   setVolume(volume: number) {

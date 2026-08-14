@@ -34,8 +34,10 @@ pub struct PlayerStatus {
     message: String,
     track_title: Option<String>,
     artist: Option<String>,
+    track_uri: Option<String>,
     duration_ms: Option<u32>,
     position_ms: Option<u32>,
+    track_sequence: u64,
     advance_sequence: u64,
 }
 
@@ -74,8 +76,10 @@ impl Default for PlayerStatus {
             message: "Spotify Premium hesabınızla bağlanın".into(),
             track_title: None,
             artist: None,
+            track_uri: None,
             duration_ms: None,
             position_ms: None,
+            track_sequence: 0,
             advance_sequence: 0,
         }
     }
@@ -255,11 +259,30 @@ async fn watch_player_events(
     while let Some(event) = events.recv().await {
         let mut current = status.write().await;
         match event {
+            PlayerEvent::Loading {
+                track_id,
+                position_ms,
+                ..
+            } => {
+                current.state = "loading".into();
+                current.position_ms = Some(position_ms);
+                current.message = "Parça yükleniyor".into();
+                if let Ok(uri) = track_id.to_uri()
+                    && current.track_uri.as_deref() != Some(uri.as_str())
+                {
+                    current.track_uri = Some(uri);
+                    current.track_title = None;
+                    current.artist = None;
+                    current.duration_ms = None;
+                }
+            }
             PlayerEvent::TrackChanged { audio_item } => {
                 current.track_title = Some(audio_item.name.clone());
                 current.artist = artist_name(&audio_item.unique_fields);
+                current.track_uri = Some(audio_item.uri.clone());
                 current.duration_ms = Some(audio_item.duration_ms);
                 current.position_ms = Some(0);
+                current.track_sequence = current.track_sequence.wrapping_add(1);
                 current.message = "Parça yüklendi".into();
             }
             PlayerEvent::Playing { position_ms, .. }
