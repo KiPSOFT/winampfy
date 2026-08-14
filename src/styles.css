@@ -435,24 +435,12 @@ body {
   white-space: nowrap;
 }
 
-.skin-pagination {
-  display: flex;
-  align-items: center;
-  gap: 5px;
+#skin-scroll-state {
+  flex: 0 0 auto;
   color: #00f000;
   font-family: var(--playlist-font, "Tahoma", sans-serif);
-}
-
-#skin-prev,
-#skin-next {
-  width: 22px;
-  min-height: 18px;
-  padding: 0;
-}
-
-#skin-page {
-  min-width: 18px;
-  text-align: center;
+  font-size: 8px;
+  white-space: nowrap;
 }
 
 #skin-apply {

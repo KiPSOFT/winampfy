@@ -38,7 +38,7 @@ Winampfy combines Webamp's faithful Winamp 2.x interface with a native Tauri she
 - Spotify playlist browser with name/owner filtering and direct playlist URL support
 - First-run quick-start guide for adding songs and loading playlists, available again from About
 - Full-screen modes for the Spotify playlist and Skin Museum browsers
-- Built-in browser for 100,000+ classic skins from [Winamp Skin Museum](https://skins.webamp.org/)
+- Infinite-scroll browser for 100,000+ classic skins from [Winamp Skin Museum](https://skins.webamp.org/)
 - Downloaded skins are added to Webamp's native **Skins** menu and restored between launches
 - Replace the current queue from **LIST OPTS → LOAD LIST**, optionally shuffled before loading
 - Play, pause, previous, next, seek, volume, shuffle and repeat controls
@@ -85,7 +85,7 @@ Winampfy shows a three-step quick-start guide on first launch. You can open it a
 ### Explore skins
 
 1. Open Winamp's main menu and choose **Skins → Explore Skins...**.
-2. Browse or search the Winamp Skin Museum, select a skin, then press **DOWNLOAD + APPLY**. Double-clicking a skin does the same thing.
+2. Browse the infinite-scrolling Winamp Skin Museum list or search by name, select a skin, then press **DOWNLOAD + APPLY**. Double-clicking a skin does the same thing.
 3. Downloaded skins appear in the native **Skins** menu and remain available after restarting Winampfy.
 4. The Skin Museum dialog can also be switched to full-screen mode from its title bar.
 

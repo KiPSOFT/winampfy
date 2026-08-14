@@ -88,7 +88,7 @@ const INSTALLED_SKINS_STORAGE_KEY = "winampfy.skins.v1";
 const ACTIVE_SKIN_STORAGE_KEY = "winampfy.active-skin.v1";
 const ONBOARDING_STORAGE_KEY = "winampfy.onboarding.v1";
 const SKIN_MUSEUM_API = "https://skins.webamp.org/graphql";
-const SKIN_PAGE_SIZE = 12;
+const SKIN_PAGE_SIZE = 24;
 const WINAMP_LOGO_URL = new URL("../src-tauri/icons/winamp-logo.png", import.meta.url).href;
 
 let latestStatus = disconnectedStatus;
@@ -411,11 +411,7 @@ app.innerHTML = `
       <div id="skin-search-results" role="listbox" aria-label="Winamp skin sonuçları"></div>
       <footer class="skin-explorer-footer">
         <span id="skin-source">WINAMP SKIN MUSEUM</span>
-        <div class="skin-pagination">
-          <button id="skin-prev" type="button">&lt;</button>
-          <span id="skin-page">1</span>
-          <button id="skin-next" type="button">&gt;</button>
-        </div>
+        <span id="skin-scroll-state">SCROLL FOR MORE</span>
         <button id="skin-apply" type="button" disabled>DOWNLOAD + APPLY</button>
       </footer>
     </section>
@@ -827,10 +823,8 @@ function openSkinExplorerDialog() {
   const closeButton = document.querySelector<HTMLButtonElement>("#skin-explorer-close")!;
   const fullscreenButton = document.querySelector<HTMLButtonElement>("#skin-explorer-fullscreen")!;
   const submitButton = document.querySelector<HTMLButtonElement>("#skin-search-submit")!;
-  const prevButton = document.querySelector<HTMLButtonElement>("#skin-prev")!;
-  const nextButton = document.querySelector<HTMLButtonElement>("#skin-next")!;
   const applyButton = document.querySelector<HTMLButtonElement>("#skin-apply")!;
-  const pageElement = document.querySelector<HTMLElement>("#skin-page")!;
+  const scrollState = document.querySelector<HTMLElement>("#skin-scroll-state")!;
   const status = document.querySelector<HTMLElement>("#skin-search-status")!;
   const resultsElement = document.querySelector<HTMLElement>("#skin-search-results")!;
 
@@ -838,28 +832,31 @@ function openSkinExplorerDialog() {
   let offset = 0;
   let results: SkinMuseumSkin[] = [];
   let selectedIndex = -1;
-  let hasNext = false;
+  let hasNext = true;
+  let isLoading = false;
+  let knownTotal: number | null = null;
   let requestId = 0;
   const restoreFullscreen = bindDialogFullscreen(dialog, fullscreenButton);
+  const resizeObserver = new ResizeObserver(() => maybeLoadMore());
 
   const close = () => {
     requestId += 1;
     restoreFullscreen();
+    resizeObserver.disconnect();
     dialog.hidden = true;
     form.onsubmit = null;
     closeButton.onclick = null;
-    prevButton.onclick = null;
-    nextButton.onclick = null;
     applyButton.onclick = null;
     resultsElement.onclick = null;
     resultsElement.ondblclick = null;
+    resultsElement.onscroll = null;
     dialog.onkeydown = null;
   };
 
-  const renderResults = () => {
-    resultsElement.replaceChildren();
+  const appendResults = (skins: SkinMuseumSkin[], startIndex: number) => {
     const fragment = document.createDocumentFragment();
-    results.forEach((skin, index) => {
+    skins.forEach((skin, localIndex) => {
+      const index = startIndex + localIndex;
       const card = document.createElement("button");
       const installed = installedSkins.some((item) => item.md5 === skin.md5);
       card.type = "button";
@@ -886,47 +883,69 @@ function openSkinExplorerDialog() {
     applyButton.disabled = selectedIndex < 0;
   };
 
-  const loadPage = async () => {
-    const currentRequest = ++requestId;
+  const loadMore = async (reset = false) => {
+    if (!reset && (isLoading || !hasNext)) return;
+    if (reset) {
+      requestId += 1;
+      offset = 0;
+      results = [];
+      selectedIndex = -1;
+      hasNext = true;
+      knownTotal = null;
+      resultsElement.replaceChildren();
+      resultsElement.scrollTop = 0;
+    }
+
+    const currentRequest = requestId;
+    isLoading = true;
     submitButton.disabled = true;
-    prevButton.disabled = true;
-    nextButton.disabled = true;
     applyButton.disabled = true;
-    input.disabled = true;
-    status.textContent = "SKIN MUSEUM YÜKLENİYOR...";
+    scrollState.textContent = "LOADING MORE...";
+    status.textContent = results.length === 0
+      ? "SKIN MUSEUM YÜKLENİYOR..."
+      : `${results.length} SKINS LOADED • LOADING MORE...`;
     status.dataset.state = "loading";
-    resultsElement.replaceChildren();
 
     try {
       const page = await fetchSkinMuseumPage(query, offset);
       if (currentRequest !== requestId) return;
-      results = page.skins;
+      const existingIds = new Set(results.map((skin) => skin.md5));
+      const nextSkins = page.skins.filter((skin) => !existingIds.has(skin.md5));
+      const startIndex = results.length;
+      results.push(...nextSkins);
+      offset += SKIN_PAGE_SIZE;
       hasNext = page.hasNext;
-      selectedIndex = results.length > 0 ? 0 : -1;
-      renderResults();
-      const firstResult = results.length > 0 ? offset + 1 : 0;
-      const lastResult = offset + results.length;
-      const total = page.total == null ? "" : ` / ${page.total.toLocaleString()}`;
+      if (page.total != null) knownTotal = page.total;
+      if (selectedIndex < 0 && results.length > 0) selectedIndex = 0;
+      appendResults(nextSkins, startIndex);
+      const total = knownTotal == null ? "" : ` / ${knownTotal.toLocaleString()}`;
       status.textContent = results.length > 0
-        ? `${firstResult}-${lastResult}${total} SKINS • SELECT AND APPLY`
+        ? `${results.length}${total} SKINS LOADED • SELECT AND APPLY`
         : "SKIN BULUNAMADI";
       status.dataset.state = results.length > 0 ? "success" : "error";
-      pageElement.textContent = String(Math.floor(offset / SKIN_PAGE_SIZE) + 1);
+      scrollState.textContent = hasNext ? "SCROLL FOR MORE" : "END OF RESULTS";
     } catch (error) {
       if (currentRequest !== requestId) return;
-      results = [];
-      selectedIndex = -1;
       status.textContent = `SKIN MUSEUM HATASI: ${String(error)}`;
       status.dataset.state = "error";
+      scrollState.textContent = "LOAD ERROR — SEARCH TO RETRY";
+      hasNext = false;
     } finally {
       if (currentRequest !== requestId) return;
+      isLoading = false;
       submitButton.disabled = false;
-      input.disabled = false;
-      prevButton.disabled = offset === 0;
-      nextButton.disabled = !hasNext;
       applyButton.disabled = selectedIndex < 0;
+      window.setTimeout(maybeLoadMore, 0);
     }
   };
+
+  function maybeLoadMore() {
+    if (isLoading || !hasNext || dialog.hidden) return;
+    const remaining = resultsElement.scrollHeight
+      - resultsElement.scrollTop
+      - resultsElement.clientHeight;
+    if (remaining <= 220) void loadMore();
+  }
 
   const applySelected = async () => {
     const skin = results[selectedIndex];
@@ -956,23 +975,17 @@ function openSkinExplorerDialog() {
   form.onsubmit = (event) => {
     event.preventDefault();
     query = input.value.trim();
-    offset = 0;
-    void loadPage();
+    void loadMore(true);
   };
-  prevButton.onclick = () => {
-    offset = Math.max(0, offset - SKIN_PAGE_SIZE);
-    void loadPage();
-  };
-  nextButton.onclick = () => {
-    if (!hasNext) return;
-    offset += SKIN_PAGE_SIZE;
-    void loadPage();
-  };
+  resultsElement.onscroll = maybeLoadMore;
   resultsElement.onclick = (event) => {
     const card = (event.target as HTMLElement).closest<HTMLElement>(".skin-result");
     if (!card) return;
+    resultsElement.querySelector<HTMLElement>('.skin-result[aria-selected="true"]')
+      ?.setAttribute("aria-selected", "false");
     selectedIndex = Number(card.dataset.index);
-    renderResults();
+    card.setAttribute("aria-selected", "true");
+    applyButton.disabled = false;
   };
   resultsElement.ondblclick = (event) => {
     const card = (event.target as HTMLElement).closest<HTMLElement>(".skin-result");
@@ -981,8 +994,9 @@ function openSkinExplorerDialog() {
     void applySelected();
   };
   applyButton.onclick = () => void applySelected();
+  resizeObserver.observe(resultsElement);
   window.setTimeout(() => input.focus(), 0);
-  void loadPage();
+  void loadMore(true);
 }
 
 webamp = new Webamp({

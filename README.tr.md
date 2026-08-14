@@ -38,7 +38,7 @@ Winampfy, Webamp'ın Winamp 2.x arayüzünü native Tauri kabuğu ve librespot �
 - Ad/sahip filtresi ve doğrudan playlist URL desteğiyle Spotify playlist tarayıcısı
 - İlk açılışta şarkı ekleme ve playlist yüklemeyi anlatan, About ekranından yeniden açılabilen hızlı başlangıç rehberi
 - Spotify playlist ve Skin Museum tarayıcıları için tam ekran modu
-- [Winamp Skin Museum](https://skins.webamp.org/) üzerindeki 100.000'den fazla klasik skin için uygulama içi tarayıcı
+- [Winamp Skin Museum](https://skins.webamp.org/) üzerindeki 100.000'den fazla klasik skin için sonsuz kaydırmalı uygulama içi tarayıcı
 - İndirilen skinleri Webamp'in native **Skins** menüsüne ekleme ve sonraki açılışta geri yükleme
 - **LIST OPTS → LOAD LIST** üzerinden mevcut listeyi değiştirme ve yüklemeden önce isteğe bağlı karıştırma
 - Play, pause, önceki, sonraki, seek, ses, shuffle ve repeat kontrolleri
@@ -85,7 +85,7 @@ Winampfy ilk açılışta üç adımlı hızlı başlangıç rehberini gösterir
 ### Skin keşfetme
 
 1. Winamp ana menüsünden **Skins → Explore Skins...** seçeneğini açın.
-2. Winamp Skin Museum'da gezinin veya arama yapın; bir skin seçip **DOWNLOAD + APPLY** düğmesine basın. Skine çift tıklamak da aynı işlemi yapar.
+2. Winamp Skin Museum'un sonsuz kaydırmalı listesinde gezinin veya adla arama yapın; bir skin seçip **DOWNLOAD + APPLY** düğmesine basın. Skine çift tıklamak da aynı işlemi yapar.
 3. İndirilen skinler native **Skins** menüsüne eklenir ve Winampfy yeniden açıldığında kullanılabilir kalır.
 4. Skin Museum penceresini de başlık çubuğundaki düğmeyle tam ekran yapabilirsiniz.
 
