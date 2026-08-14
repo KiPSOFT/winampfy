@@ -10,7 +10,8 @@ use tauri::{
 use playback::{
     PlayerState, player_load_uri, player_next, player_pause, player_play, player_previous,
     player_seek, player_set_repeat, player_set_shuffle, player_set_volume, player_status,
-    player_stop, spotify_login, spotify_playlist_tracks, spotify_playlists, spotify_search,
+    player_stop, player_sync_volume, spotify_login, spotify_playlist_tracks, spotify_playlists,
+    spotify_search,
 };
 
 fn show_main_window(app: &AppHandle) {
@@ -76,6 +77,7 @@ pub fn run() {
             player_next,
             player_seek,
             player_set_volume,
+            player_sync_volume,
             player_set_shuffle,
             player_set_repeat,
             player_load_uri,

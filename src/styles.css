@@ -96,7 +96,8 @@ body {
 
 #search-title,
 #playlist-search-title,
-#update-title {
+#update-title,
+#about-title {
   flex: 0 0 auto;
   font-size: 9px;
   white-space: nowrap;
@@ -137,7 +138,8 @@ body {
 
 #search-close,
 #playlist-search-close,
-#update-close {
+#update-close,
+#about-close {
   flex: 0 0 10px;
   width: 10px;
   min-height: 10px;
@@ -379,3 +381,68 @@ body {
 
 #update-later,
 #update-install { min-width: 78px; }
+
+.about-dialog { place-items: center; }
+
+.about-panel {
+  width: min(360px, 100%);
+  min-height: 184px;
+  grid-template-rows: 18px minmax(0, 1fr) 27px;
+}
+
+.about-content {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin: 6px;
+  padding: 12px;
+  border: 1px solid #090a0e;
+  outline: 1px solid #555a70;
+  background: #08090c;
+}
+
+.about-content img {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  image-rendering: auto;
+}
+
+.about-copy { min-width: 0; }
+
+.about-copy strong,
+#about-version {
+  display: block;
+  font-family: var(--playlist-font, "Tahoma", sans-serif);
+  letter-spacing: .7px;
+}
+
+.about-copy strong {
+  color: #f19a17;
+  font-size: 16px;
+  text-shadow: 1px 1px #592a00;
+}
+
+#about-version {
+  margin-top: 3px;
+  color: #00f000;
+  font-size: 10px;
+}
+
+.about-copy p {
+  margin: 10px 0 0;
+  color: #969aac;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.about-author {
+  display: block;
+  margin-top: 8px;
+  color: #f19a17;
+  font: 9px/1.2 var(--playlist-font, "Tahoma", sans-serif);
+  letter-spacing: .3px;
+}
+
+#about-ok { min-width: 62px; }

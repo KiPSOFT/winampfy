@@ -85,6 +85,7 @@ pub struct PlayerState {
     status: Arc<RwLock<PlayerStatus>>,
     spirc: Arc<Mutex<Option<Spirc>>>,
     session: Arc<Mutex<Option<Session>>>,
+    mixer: Arc<Mutex<Option<Arc<dyn mixer::Mixer>>>>,
 }
 
 impl PlayerState {
@@ -93,6 +94,7 @@ impl PlayerState {
             status: Arc::new(RwLock::new(PlayerStatus::default())),
             spirc: Arc::new(Mutex::new(None)),
             session: Arc::new(Mutex::new(None)),
+            mixer: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -128,6 +130,7 @@ pub async fn spotify_login(
         state.status.clone(),
         state.spirc.clone(),
         state.session.clone(),
+        state.mixer.clone(),
     )
     .await;
     if let Err(error) = result {
@@ -149,6 +152,7 @@ async fn initialise_player(
     status: Arc<RwLock<PlayerStatus>>,
     spirc_slot: Arc<Mutex<Option<Spirc>>>,
     session_slot: Arc<Mutex<Option<Session>>>,
+    mixer_slot: Arc<Mutex<Option<Arc<dyn mixer::Mixer>>>>,
 ) -> Result<(), String> {
     let session_config = SessionConfig::default();
     let cache_root = app
@@ -208,15 +212,22 @@ async fn initialise_player(
     );
     let player_events = player.get_player_event_channel();
 
+    let initial_volume = ((u16::MAX as u32 * 72) / 100) as u16;
     let connect_config = ConnectConfig {
         name: DEVICE_NAME.into(),
-        initial_volume: ((u16::MAX as u32 * 72) / 100) as u16,
+        initial_volume,
         ..ConnectConfig::default()
     };
-    let (spirc, spirc_task) =
-        Spirc::new(connect_config, session.clone(), credentials, player, mixer)
-            .await
-            .map_err(|error| format!("Spotify oturumu açılamadı: {error}"))?;
+    mixer.set_volume(initial_volume);
+    let (spirc, spirc_task) = Spirc::new(
+        connect_config,
+        session.clone(),
+        credentials,
+        player,
+        mixer.clone(),
+    )
+    .await
+    .map_err(|error| format!("Spotify oturumu açılamadı: {error}"))?;
 
     spirc
         .activate()
@@ -227,6 +238,9 @@ async fn initialise_player(
     *session_slot
         .lock()
         .map_err(|_| "Spotify session lock failed".to_string())? = Some(session);
+    *mixer_slot
+        .lock()
+        .map_err(|_| "Audio mixer lock failed".to_string())? = Some(mixer);
 
     tauri::async_runtime::spawn(spirc_task);
     tauri::async_runtime::spawn(watch_player_events(player_events, status));
@@ -370,6 +384,19 @@ pub fn player_seek(position_ms: u32, state: State<'_, PlayerState>) -> Result<()
 
 #[tauri::command]
 pub fn player_set_volume(volume: u8, state: State<'_, PlayerState>) -> Result<(), String> {
+    let volume = ((u16::MAX as u32 * volume.min(100) as u32) / 100) as u16;
+    let mixer = state
+        .mixer
+        .lock()
+        .map_err(|_| "Audio mixer lock failed".to_string())?
+        .clone()
+        .ok_or_else(|| "Spotify player is not connected".to_string())?;
+    mixer.set_volume(volume);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn player_sync_volume(volume: u8, state: State<'_, PlayerState>) -> Result<(), String> {
     let volume = ((u16::MAX as u32 * volume.min(100) as u32) / 100) as u16;
     with_spirc(&state, |spirc| spirc.set_volume(volume))
 }

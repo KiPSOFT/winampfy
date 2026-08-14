@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
@@ -67,6 +68,7 @@ const disconnectedStatus: PlayerStatus = {
 };
 
 const PLAYLIST_STORAGE_KEY = "winampfy.playlist.v1";
+const WINAMP_LOGO_URL = new URL("../src-tauri/icons/winamp-logo.png", import.meta.url).href;
 
 let latestStatus = disconnectedStatus;
 let webamp: Webamp | null = null;
@@ -81,6 +83,10 @@ class LibrespotMedia {
   private pollTimer: number;
   private pollInFlight = false;
   private lastAdvanceSequence = 0;
+  private desiredVolume: number | null = null;
+  private appliedVolume = 72;
+  private volumeUpdateInFlight = false;
+  private volumeSyncTimer: number | null = null;
 
   constructor() {
     this.analyser.fftSize = 256;
@@ -172,7 +178,43 @@ class LibrespotMedia {
   }
 
   setVolume(volume: number) {
-    void invoke("player_set_volume", { volume: Math.round(volume) });
+    this.desiredVolume = Math.max(0, Math.min(100, Math.round(volume)));
+    if (this.volumeSyncTimer != null) {
+      window.clearTimeout(this.volumeSyncTimer);
+      this.volumeSyncTimer = null;
+    }
+    void this.flushVolume();
+  }
+
+  private async flushVolume() {
+    if (this.volumeUpdateInFlight) return;
+    this.volumeUpdateInFlight = true;
+    try {
+      while (this.desiredVolume != null) {
+        const volume = this.desiredVolume;
+        this.desiredVolume = null;
+        await invoke("player_set_volume", { volume });
+        this.appliedVolume = volume;
+      }
+    } catch (error) {
+      console.warn("Winampfy volume update failed", error);
+    } finally {
+      this.volumeUpdateInFlight = false;
+      if (this.desiredVolume != null) {
+        void this.flushVolume();
+        return;
+      }
+
+      // The soft mixer changes immediately above. Spotify Connect only needs
+      // the final value, so debounce that slower state synchronization instead
+      // of filling librespot's command queue while the knob is being dragged.
+      this.volumeSyncTimer = window.setTimeout(() => {
+        this.volumeSyncTimer = null;
+        void invoke("player_sync_volume", { volume: this.appliedVolume }).catch((error) => {
+          console.warn("Spotify volume synchronization failed", error);
+        });
+      }, 180);
+    }
   }
 
   setBalance(_balance: number) {}
@@ -187,6 +229,7 @@ class LibrespotMedia {
 
   dispose() {
     window.clearInterval(this.pollTimer);
+    if (this.volumeSyncTimer != null) window.clearTimeout(this.volumeSyncTimer);
     this.listeners.clear();
     void this.context.close();
   }
@@ -325,6 +368,29 @@ app.innerHTML = `
       </footer>
     </section>
   </div>
+  <div id="about-dialog" class="search-dialog about-dialog" hidden>
+    <section class="search-panel about-panel" role="dialog" aria-modal="true" aria-labelledby="about-title">
+      <header>
+        <i class="title-rule" aria-hidden="true"></i>
+        <span id="about-title">ABOUT WINAMPFY</span>
+        <i class="title-rule" aria-hidden="true"></i>
+        <button id="about-close" type="button" aria-label="Kapat">×</button>
+      </header>
+      <div class="about-content">
+        <img src="${WINAMP_LOGO_URL}" alt="" />
+        <div class="about-copy">
+          <strong>WINAMPFY</strong>
+          <span id="about-version">VERSION ...</span>
+          <p>OLD-SCHOOL WINAMP LOOK.<br />SPOTIFY UNDER THE HOOD.</p>
+          <span class="about-author">by KiPSOFT aka Serkan KOCAMAN</span>
+        </div>
+      </div>
+      <footer>
+        <span>POWERED BY WEBAMP + LIBRESPOT</span>
+        <button id="about-ok" type="button">OK</button>
+      </footer>
+    </section>
+  </div>
 `;
 
 let updateCheckStarted = false;
@@ -410,6 +476,34 @@ function showUpdateDialog(update: AppUpdate) {
       installButton.textContent = "RETRY";
     }
   };
+}
+
+async function openAboutDialog() {
+  const dialog = document.querySelector<HTMLElement>("#about-dialog")!;
+  const closeButton = document.querySelector<HTMLButtonElement>("#about-close")!;
+  const okButton = document.querySelector<HTMLButtonElement>("#about-ok")!;
+  const version = document.querySelector<HTMLElement>("#about-version")!;
+
+  dialog.hidden = false;
+  version.textContent = "VERSION ...";
+
+  const close = () => {
+    dialog.hidden = true;
+    dialog.onkeydown = null;
+  };
+  closeButton.onclick = close;
+  okButton.onclick = close;
+  dialog.onkeydown = (event) => {
+    if (event.key === "Escape") close();
+  };
+  window.setTimeout(() => okButton.focus(), 0);
+
+  try {
+    version.textContent = `VERSION ${await getVersion()}`;
+  } catch (error) {
+    version.textContent = "VERSION UNKNOWN";
+    console.warn("Winampfy version could not be read", error);
+  }
 }
 
 webamp = new Webamp({
@@ -864,6 +958,17 @@ void webamp.renderInto(document.querySelector<HTMLElement>("#webamp-container")!
   document.documentElement.style.setProperty("--playlist-font", playlistFont);
   syncWebampMetadata(latestStatus);
   window.setTimeout(() => void checkForAppUpdate(), 1500);
+
+  // Webamp's lightning-bolt logo is its built-in About control. Keep that
+  // authentic hotspot and show Winampfy's native-styled About window instead.
+  document.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    if (!target.closest("#main-window #about")) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void openAboutDialog();
+  }, true);
 
   // In Winamp the ADD button normally opens a second tiny menu before URL can
   // be selected. Winampfy has one add source, so a single ADD click opens the
