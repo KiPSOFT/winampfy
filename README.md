@@ -36,6 +36,10 @@ Winampfy combines Webamp's faithful Winamp 2.x interface with a native Tauri she
 - Spotify search inside a Winamp-styled dialog
 - Multi-select search results and queue playback
 - Spotify playlist browser with name/owner filtering and direct playlist URL support
+- First-run quick-start guide for adding songs and loading playlists, available again from About
+- Full-screen modes for the Spotify playlist and Skin Museum browsers
+- Built-in browser for 100,000+ classic skins from [Winamp Skin Museum](https://skins.webamp.org/)
+- Downloaded skins are added to Webamp's native **Skins** menu and restored between launches
 - Replace the current queue from **LIST OPTS → LOAD LIST**, optionally shuffled before loading
 - Play, pause, previous, next, seek, volume, shuffle and repeat controls
 - Playlist persistence between launches
@@ -56,11 +60,34 @@ The public builds are currently not notarized or signed with a commercial certif
 
 ## Usage
 
-1. Launch Winampfy and press **Play**, or open **ADD** in the Playlist Editor.
+Winampfy shows a three-step quick-start guide on first launch. You can open it again at any time by clicking the Winamp lightning-bolt logo and choosing **HOW TO USE**.
+
+### Connect Spotify
+
+1. Launch Winampfy and press **Play**, or press **ADD** in the Playlist Editor.
 2. Complete Spotify OAuth in the system browser when prompted.
-3. Press **ADD**, search Spotify, select one or more tracks, and add them to the playlist.
-4. To load a Spotify playlist, open **LIST OPTS → LOAD LIST**, select one playlist, optionally enable **SHUFFLE BEFORE LOAD**, and press **LOAD**.
-5. Press **Play** to play the list in order.
+3. Return to Winampfy. Spotify does not need to remain open.
+
+### Add songs
+
+1. Press **ADD** at the bottom-left of the Playlist Editor.
+2. Search by song, artist or album, or paste a Spotify track URL.
+3. Select one or more search results and press **ADD SEL**.
+4. Press **Play** to play the queue in order. The queue is preserved between launches.
+
+### Load a playlist
+
+1. Open **LIST OPTS → LOAD LIST** at the bottom-right of the Playlist Editor.
+2. Search your Spotify playlists, or paste any accessible Spotify playlist URL—including a public playlist link.
+3. Select one playlist, optionally enable **SHUFFLE BEFORE LOAD**, and press **LOAD**. Loading replaces the current queue.
+4. Use the square button in the dialog title bar to enter or leave full-screen mode.
+
+### Explore skins
+
+1. Open Winamp's main menu and choose **Skins → Explore Skins...**.
+2. Browse or search the Winamp Skin Museum, select a skin, then press **DOWNLOAD + APPLY**. Double-clicking a skin does the same thing.
+3. Downloaded skins appear in the native **Skins** menu and remain available after restarting Winampfy.
+4. The Skin Museum dialog can also be switched to full-screen mode from its title bar.
 
 Authentication is handled in the browser. Winampfy receives an access token through a localhost OAuth callback; it does not ask for or store your Spotify password.
 

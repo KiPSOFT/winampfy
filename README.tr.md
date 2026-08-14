@@ -36,6 +36,10 @@ Winampfy, Webamp'ın Winamp 2.x arayüzünü native Tauri kabuğu ve librespot �
 - Winamp stilindeki pencere içinde Spotify araması
 - Arama sonuçlarından çoklu seçim ve sıralı playlist oynatma
 - Ad/sahip filtresi ve doğrudan playlist URL desteğiyle Spotify playlist tarayıcısı
+- İlk açılışta şarkı ekleme ve playlist yüklemeyi anlatan, About ekranından yeniden açılabilen hızlı başlangıç rehberi
+- Spotify playlist ve Skin Museum tarayıcıları için tam ekran modu
+- [Winamp Skin Museum](https://skins.webamp.org/) üzerindeki 100.000'den fazla klasik skin için uygulama içi tarayıcı
+- İndirilen skinleri Webamp'in native **Skins** menüsüne ekleme ve sonraki açılışta geri yükleme
 - **LIST OPTS → LOAD LIST** üzerinden mevcut listeyi değiştirme ve yüklemeden önce isteğe bağlı karıştırma
 - Play, pause, önceki, sonraki, seek, ses, shuffle ve repeat kontrolleri
 - Uygulama kapatılıp açıldığında korunan playlist
@@ -56,11 +60,34 @@ Herkese açık derlemeler şu anda Apple notarization veya ticari kod imzalama s
 
 ## Kullanım
 
-1. Winampfy'ı açıp **Play** düğmesine basın veya Playlist Editor'daki **ADD** düğmesini açın.
+Winampfy ilk açılışta üç adımlı hızlı başlangıç rehberini gösterir. Rehberi daha sonra Winamp şimşek logosuna tıklayıp **HOW TO USE** seçeneğini kullanarak yeniden açabilirsiniz.
+
+### Spotify'a bağlanma
+
+1. Winampfy'ı açıp **Play** düğmesine veya Playlist Editor'daki **ADD** düğmesine basın.
 2. İstendiğinde sistem tarayıcısında Spotify OAuth girişini tamamlayın.
-3. **ADD** üzerinden Spotify'da arama yapın, bir veya daha fazla şarkı seçip listeye ekleyin.
-4. Spotify playlist'i yüklemek için **LIST OPTS → LOAD LIST** yolunu açın, tek playlist seçin, isterseniz **SHUFFLE BEFORE LOAD** seçeneğini etkinleştirip **LOAD** düğmesine basın.
-5. Listeyi sırayla oynatmak için **Play** düğmesine basın.
+3. Winampfy'a dönün. Bundan sonra Spotify uygulamasının açık kalması gerekmez.
+
+### Şarkı ekleme
+
+1. Playlist Editor'ın sol altındaki **ADD** düğmesine basın.
+2. Şarkı, sanatçı veya albüm adıyla arama yapın ya da bir Spotify şarkı URL'si yapıştırın.
+3. Bir veya daha fazla sonucu seçip **ADD SEL** düğmesine basın.
+4. Sırayı çalmak için **Play** düğmesine basın. Şarkı sırası uygulama yeniden açıldığında korunur.
+
+### Playlist yükleme
+
+1. Playlist Editor'ın sağ altındaki **LIST OPTS → LOAD LIST** yolunu açın.
+2. Spotify playlistlerinizde arama yapın veya herkese açık playlistler dahil erişebildiğiniz bir Spotify playlist URL'si yapıştırın.
+3. Bir playlist seçin, isterseniz **SHUFFLE BEFORE LOAD** seçeneğini açın ve **LOAD** düğmesine basın. Bu işlem mevcut şarkı sırasını değiştirir.
+4. Pencere başlığındaki kare düğmeyle tam ekran moduna girip çıkabilirsiniz.
+
+### Skin keşfetme
+
+1. Winamp ana menüsünden **Skins → Explore Skins...** seçeneğini açın.
+2. Winamp Skin Museum'da gezinin veya arama yapın; bir skin seçip **DOWNLOAD + APPLY** düğmesine basın. Skine çift tıklamak da aynı işlemi yapar.
+3. İndirilen skinler native **Skins** menüsüne eklenir ve Winampfy yeniden açıldığında kullanılabilir kalır.
+4. Skin Museum penceresini de başlık çubuğundaki düğmeyle tam ekran yapabilirsiniz.
 
 Kimlik doğrulama tarayıcıda yapılır. Winampfy, erişim anahtarını localhost OAuth callback üzerinden alır; Spotify parolanızı istemez veya saklamaz.
 

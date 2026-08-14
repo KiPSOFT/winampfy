@@ -7,6 +7,7 @@
     "core:default",
     "core:window:allow-hide",
     "core:window:allow-start-dragging",
+    "core:window:allow-set-fullscreen",
     "opener:default",
     "process:allow-restart",
     "updater:default"

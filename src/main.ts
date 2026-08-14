@@ -56,6 +56,22 @@ interface PlaylistInputTrack {
   duration: number;
 }
 
+interface SkinMuseumSkin {
+  md5: string;
+  filename: string;
+  download_url: string;
+  screenshot_url: string;
+  nsfw: boolean;
+  average_color: string | null;
+}
+
+interface InstalledSkin {
+  md5: string;
+  name: string;
+  url: string;
+  screenshotUrl: string;
+}
+
 const disconnectedStatus: PlayerStatus = {
   state: "disconnected",
   device_name: "Winampfy Desktop",
@@ -68,6 +84,11 @@ const disconnectedStatus: PlayerStatus = {
 };
 
 const PLAYLIST_STORAGE_KEY = "winampfy.playlist.v1";
+const INSTALLED_SKINS_STORAGE_KEY = "winampfy.skins.v1";
+const ACTIVE_SKIN_STORAGE_KEY = "winampfy.active-skin.v1";
+const ONBOARDING_STORAGE_KEY = "winampfy.onboarding.v1";
+const SKIN_MUSEUM_API = "https://skins.webamp.org/graphql";
+const SKIN_PAGE_SIZE = 12;
 const WINAMP_LOGO_URL = new URL("../src-tauri/icons/winamp-logo.png", import.meta.url).href;
 
 let latestStatus = disconnectedStatus;
@@ -282,7 +303,29 @@ function loadSavedPlaylist(): PlaylistInputTrack[] {
   }
 }
 
+function loadInstalledSkins(): InstalledSkin[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(INSTALLED_SKINS_STORAGE_KEY) ?? "[]") as unknown;
+    if (!Array.isArray(value)) return [];
+    return value.filter((skin): skin is InstalledSkin => {
+      if (typeof skin !== "object" || skin == null) return false;
+      const candidate = skin as Partial<InstalledSkin>;
+      return typeof candidate.md5 === "string"
+        && typeof candidate.name === "string"
+        && typeof candidate.url === "string"
+        && typeof candidate.screenshotUrl === "string";
+    });
+  } catch {
+    return [];
+  }
+}
+
 const savedPlaylist = loadSavedPlaylist();
+let installedSkins = loadInstalledSkins();
+const savedActiveSkinUrl = localStorage.getItem(ACTIVE_SKIN_STORAGE_KEY);
+const initialSkinUrl = installedSkins.some((skin) => skin.url === savedActiveSkinUrl)
+  ? savedActiveSkinUrl
+  : null;
 const connectionPlaceholder: PlaylistInputTrack = {
   url: "spotify:current",
   defaultName: "Spotify Premium — Press Play to Connect",
@@ -327,6 +370,7 @@ app.innerHTML = `
         <i class="title-rule" aria-hidden="true"></i>
         <span id="playlist-search-title">LOAD LIST // SPOTIFY PLAYLISTS</span>
         <i class="title-rule" aria-hidden="true"></i>
+        <button id="playlist-search-fullscreen" class="dialog-fullscreen" type="button" aria-label="Tam ekran" aria-pressed="false">□</button>
         <button id="playlist-search-close" type="button" aria-label="Kapat">×</button>
       </header>
       <form id="spotify-playlist-form">
@@ -344,6 +388,75 @@ app.innerHTML = `
           SHUFFLE BEFORE LOAD
         </label>
         <button id="playlist-load" type="button" disabled>LOAD</button>
+      </footer>
+    </section>
+  </div>
+  <div id="skin-explorer-dialog" class="search-dialog skin-explorer-dialog" hidden>
+    <section class="search-panel skin-explorer-panel" role="dialog" aria-modal="true" aria-labelledby="skin-explorer-title">
+      <header>
+        <i class="title-rule" aria-hidden="true"></i>
+        <span id="skin-explorer-title">EXPLORE SKINS // SKINS.WEBAMP.ORG</span>
+        <i class="title-rule" aria-hidden="true"></i>
+        <button id="skin-explorer-fullscreen" class="dialog-fullscreen" type="button" aria-label="Tam ekran" aria-pressed="false">□</button>
+        <button id="skin-explorer-close" type="button" aria-label="Kapat">×</button>
+      </header>
+      <form id="skin-search-form">
+        <label for="skin-search-input">SEARCH 100,000+ CLASSIC WINAMP SKINS</label>
+        <div class="search-input-row">
+          <input id="skin-search-input" autocomplete="off" spellcheck="false" />
+          <button id="skin-search-submit" type="submit">SEARCH</button>
+        </div>
+      </form>
+      <div id="skin-search-status">Skin Museum yükleniyor...</div>
+      <div id="skin-search-results" role="listbox" aria-label="Winamp skin sonuçları"></div>
+      <footer class="skin-explorer-footer">
+        <span id="skin-source">WINAMP SKIN MUSEUM</span>
+        <div class="skin-pagination">
+          <button id="skin-prev" type="button">&lt;</button>
+          <span id="skin-page">1</span>
+          <button id="skin-next" type="button">&gt;</button>
+        </div>
+        <button id="skin-apply" type="button" disabled>DOWNLOAD + APPLY</button>
+      </footer>
+    </section>
+  </div>
+  <div id="onboarding-dialog" class="search-dialog onboarding-dialog" hidden>
+    <section class="search-panel onboarding-panel" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+      <header>
+        <i class="title-rule" aria-hidden="true"></i>
+        <span id="onboarding-title">WINAMPFY QUICK START</span>
+        <i class="title-rule" aria-hidden="true"></i>
+        <button id="onboarding-close" type="button" aria-label="Kapat">×</button>
+      </header>
+      <div class="onboarding-content">
+        <div class="onboarding-step" data-step="0">
+          <span class="onboarding-kicker">STEP 1 / 3</span>
+          <strong>CONNECT SPOTIFY</strong>
+          <p>Press <b>PLAY</b> or open <b>ADD</b>. Complete Spotify login in your browser when it opens. Spotify does not need to stay open afterwards.</p>
+          <div class="onboarding-control"><span>▶</span> PLAY TO CONNECT</div>
+        </div>
+        <div class="onboarding-step" data-step="1" hidden>
+          <span class="onboarding-kicker">STEP 2 / 3</span>
+          <strong>ADD SONGS</strong>
+          <p>In the Playlist Editor press <b>ADD</b>. Search by song or artist, or paste a Spotify track URL. Select one or more results, then press <b>ADD SEL</b>.</p>
+          <div class="onboarding-path"><span>ADD</span><i>→</i><span>SEARCH / URL</span><i>→</i><span>ADD SEL</span></div>
+        </div>
+        <div class="onboarding-step" data-step="2" hidden>
+          <span class="onboarding-kicker">STEP 3 / 3</span>
+          <strong>LOAD A PLAYLIST</strong>
+          <p>Open <b>LIST OPTS → LOAD LIST</b>. Search your playlists or paste a Spotify playlist URL, select one, optionally enable shuffle, and press <b>LOAD</b>.</p>
+          <div class="onboarding-path"><span>LIST OPTS</span><i>→</i><span>LOAD LIST</span><i>→</i><span>LOAD</span></div>
+        </div>
+      </div>
+      <div class="onboarding-progress" aria-label="Onboarding ilerlemesi">
+        <i data-step="0" data-active="true"></i>
+        <i data-step="1"></i>
+        <i data-step="2"></i>
+      </div>
+      <footer>
+        <button id="onboarding-back" type="button" disabled>BACK</button>
+        <span>AVAILABLE AGAIN FROM ABOUT</span>
+        <button id="onboarding-next" type="button">NEXT</button>
       </footer>
     </section>
   </div>
@@ -387,16 +500,125 @@ app.innerHTML = `
       </div>
       <footer>
         <span>POWERED BY WEBAMP + LIBRESPOT</span>
-        <button id="about-ok" type="button">OK</button>
+        <div class="about-actions">
+          <button id="about-help" type="button">HOW TO USE</button>
+          <button id="about-ok" type="button">OK</button>
+        </div>
       </footer>
     </section>
   </div>
 `;
 
+function bindDialogFullscreen(dialog: HTMLElement, button: HTMLButtonElement) {
+  const appWindow = getCurrentWindow();
+  let disposed = false;
+  const initialFullscreen = appWindow.isFullscreen().catch(() => false);
+
+  const renderState = (fullscreen: boolean) => {
+    if (disposed) return;
+    dialog.dataset.nativeFullscreen = String(fullscreen);
+    button.setAttribute("aria-pressed", String(fullscreen));
+    button.setAttribute("aria-label", fullscreen ? "Tam ekrandan çık" : "Tam ekran");
+    button.title = fullscreen ? "RESTORE" : "FULL SCREEN";
+    button.textContent = fullscreen ? "▣" : "□";
+  };
+
+  const syncState = async () => renderState(await appWindow.isFullscreen());
+  button.disabled = false;
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      const fullscreen = await appWindow.isFullscreen();
+      await appWindow.setFullscreen(!fullscreen);
+      renderState(!fullscreen);
+    } catch (error) {
+      console.warn("Full screen mode could not be changed", error);
+    } finally {
+      if (!disposed) button.disabled = false;
+    }
+  };
+  void syncState();
+
+  return () => {
+    disposed = true;
+    button.onclick = null;
+    delete dialog.dataset.nativeFullscreen;
+    void initialFullscreen.then(async (wasFullscreen) => {
+      try {
+        if (await appWindow.isFullscreen() !== wasFullscreen) {
+          await appWindow.setFullscreen(wasFullscreen);
+        }
+      } catch (error) {
+        console.warn("Full screen mode could not be restored", error);
+      }
+    });
+  };
+}
+
+function openOnboardingDialog(force = false) {
+  if (!force && localStorage.getItem(ONBOARDING_STORAGE_KEY) === "complete") return false;
+
+  const dialog = document.querySelector<HTMLElement>("#onboarding-dialog")!;
+  const closeButton = document.querySelector<HTMLButtonElement>("#onboarding-close")!;
+  const backButton = document.querySelector<HTMLButtonElement>("#onboarding-back")!;
+  const nextButton = document.querySelector<HTMLButtonElement>("#onboarding-next")!;
+  const steps = [...dialog.querySelectorAll<HTMLElement>(".onboarding-step")];
+  const progress = [...dialog.querySelectorAll<HTMLElement>(".onboarding-progress i")];
+  let currentStep = 0;
+
+  const render = () => {
+    steps.forEach((step, index) => { step.hidden = index !== currentStep; });
+    progress.forEach((dot, index) => { dot.dataset.active = String(index === currentStep); });
+    backButton.disabled = currentStep === 0;
+    nextButton.textContent = currentStep === steps.length - 1 ? "LET'S PLAY" : "NEXT";
+  };
+  const close = () => {
+    localStorage.setItem(ONBOARDING_STORAGE_KEY, "complete");
+    dialog.hidden = true;
+    closeButton.onclick = null;
+    backButton.onclick = null;
+    nextButton.onclick = null;
+    dialog.onkeydown = null;
+  };
+
+  dialog.hidden = false;
+  closeButton.onclick = close;
+  backButton.onclick = () => {
+    currentStep = Math.max(0, currentStep - 1);
+    render();
+  };
+  nextButton.onclick = () => {
+    if (currentStep === steps.length - 1) {
+      close();
+      return;
+    }
+    currentStep += 1;
+    render();
+  };
+  dialog.onkeydown = (event) => {
+    if (event.key === "Escape") close();
+    if (event.key === "ArrowLeft" && currentStep > 0) {
+      currentStep -= 1;
+      render();
+    }
+    if (event.key === "ArrowRight" && currentStep < steps.length - 1) {
+      currentStep += 1;
+      render();
+    }
+  };
+  render();
+  window.setTimeout(() => nextButton.focus(), 0);
+  return true;
+}
+
 let updateCheckStarted = false;
 
 async function checkForAppUpdate() {
   if (import.meta.env.DEV || updateCheckStarted) return;
+  if (!document.querySelector<HTMLElement>("#onboarding-dialog")!.hidden) {
+    window.setTimeout(() => void checkForAppUpdate(), 1000);
+    return;
+  }
   updateCheckStarted = true;
   try {
     const update = await check();
@@ -481,6 +703,7 @@ function showUpdateDialog(update: AppUpdate) {
 async function openAboutDialog() {
   const dialog = document.querySelector<HTMLElement>("#about-dialog")!;
   const closeButton = document.querySelector<HTMLButtonElement>("#about-close")!;
+  const helpButton = document.querySelector<HTMLButtonElement>("#about-help")!;
   const okButton = document.querySelector<HTMLButtonElement>("#about-ok")!;
   const version = document.querySelector<HTMLElement>("#about-version")!;
 
@@ -489,10 +712,17 @@ async function openAboutDialog() {
 
   const close = () => {
     dialog.hidden = true;
+    closeButton.onclick = null;
+    helpButton.onclick = null;
+    okButton.onclick = null;
     dialog.onkeydown = null;
   };
   closeButton.onclick = close;
   okButton.onclick = close;
+  helpButton.onclick = () => {
+    close();
+    openOnboardingDialog(true);
+  };
   dialog.onkeydown = (event) => {
     if (event.key === "Escape") close();
   };
@@ -506,8 +736,259 @@ async function openAboutDialog() {
   }
 }
 
+function skinMenuEntries() {
+  return installedSkins.map((skin) => ({ url: skin.url, name: skin.name }));
+}
+
+function syncInstalledSkinMenu() {
+  webamp?.store.dispatch({ type: "SET_AVAILABLE_SKINS", skins: skinMenuEntries() });
+}
+
+async function fetchSkinMuseumPage(query: string, offset: number) {
+  const first = SKIN_PAGE_SIZE + 1;
+  const document = query
+    ? `query SearchSkins($first: Int!, $offset: Int!, $query: String!) {
+        search_classic_skins(first: $first, offset: $offset, query: $query) {
+          md5 filename download_url screenshot_url nsfw average_color
+        }
+      }`
+    : `query BrowseSkins($first: Int!, $offset: Int!) {
+        skins(first: $first, offset: $offset, sort: MUSEUM) {
+          count
+          nodes {
+            __typename
+            ... on ClassicSkin {
+              md5 filename download_url screenshot_url nsfw average_color
+            }
+          }
+        }
+      }`;
+  const response = await fetch(SKIN_MUSEUM_API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      query: document,
+      variables: query ? { first, offset, query } : { first, offset },
+    }),
+  });
+  if (!response.ok) throw new Error(`Skin Museum HTTP ${response.status}`);
+
+  const payload = await response.json() as {
+    data?: {
+      search_classic_skins?: SkinMuseumSkin[];
+      skins?: { count: number; nodes: Array<SkinMuseumSkin & { __typename?: string }> };
+    };
+    errors?: Array<{ message?: string }>;
+  };
+  if (payload.errors?.length) {
+    throw new Error(payload.errors.map((error) => error.message ?? "GraphQL error").join(", "));
+  }
+
+  const rawSkins = query
+    ? payload.data?.search_classic_skins ?? []
+    : (payload.data?.skins?.nodes ?? []).filter((skin) => skin.__typename === "ClassicSkin");
+  const safeSkins = rawSkins.filter((skin) => !skin.nsfw && skin.md5 && skin.download_url);
+  return {
+    skins: safeSkins.slice(0, SKIN_PAGE_SIZE),
+    hasNext: rawSkins.length > SKIN_PAGE_SIZE,
+    total: query ? null : payload.data?.skins?.count ?? null,
+  };
+}
+
+async function downloadAndApplySkin(skin: SkinMuseumSkin) {
+  if (!webamp) throw new Error("Webamp is not ready");
+  const response = await fetch(skin.download_url);
+  if (!response.ok) throw new Error(`Skin download HTTP ${response.status}`);
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    webamp.setSkinFromUrl(objectUrl);
+    await webamp.skinIsLoaded();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+
+  const installed: InstalledSkin = {
+    md5: skin.md5,
+    name: skin.filename.replace(/\.wsz$/i, ""),
+    url: skin.download_url,
+    screenshotUrl: skin.screenshot_url,
+  };
+  installedSkins = [installed, ...installedSkins.filter((item) => item.md5 !== installed.md5)];
+  localStorage.setItem(INSTALLED_SKINS_STORAGE_KEY, JSON.stringify(installedSkins));
+  localStorage.setItem(ACTIVE_SKIN_STORAGE_KEY, installed.url);
+  syncInstalledSkinMenu();
+}
+
+function openSkinExplorerDialog() {
+  const dialog = document.querySelector<HTMLElement>("#skin-explorer-dialog")!;
+  const form = document.querySelector<HTMLFormElement>("#skin-search-form")!;
+  const input = document.querySelector<HTMLInputElement>("#skin-search-input")!;
+  const closeButton = document.querySelector<HTMLButtonElement>("#skin-explorer-close")!;
+  const fullscreenButton = document.querySelector<HTMLButtonElement>("#skin-explorer-fullscreen")!;
+  const submitButton = document.querySelector<HTMLButtonElement>("#skin-search-submit")!;
+  const prevButton = document.querySelector<HTMLButtonElement>("#skin-prev")!;
+  const nextButton = document.querySelector<HTMLButtonElement>("#skin-next")!;
+  const applyButton = document.querySelector<HTMLButtonElement>("#skin-apply")!;
+  const pageElement = document.querySelector<HTMLElement>("#skin-page")!;
+  const status = document.querySelector<HTMLElement>("#skin-search-status")!;
+  const resultsElement = document.querySelector<HTMLElement>("#skin-search-results")!;
+
+  let query = "";
+  let offset = 0;
+  let results: SkinMuseumSkin[] = [];
+  let selectedIndex = -1;
+  let hasNext = false;
+  let requestId = 0;
+  const restoreFullscreen = bindDialogFullscreen(dialog, fullscreenButton);
+
+  const close = () => {
+    requestId += 1;
+    restoreFullscreen();
+    dialog.hidden = true;
+    form.onsubmit = null;
+    closeButton.onclick = null;
+    prevButton.onclick = null;
+    nextButton.onclick = null;
+    applyButton.onclick = null;
+    resultsElement.onclick = null;
+    resultsElement.ondblclick = null;
+    dialog.onkeydown = null;
+  };
+
+  const renderResults = () => {
+    resultsElement.replaceChildren();
+    const fragment = document.createDocumentFragment();
+    results.forEach((skin, index) => {
+      const card = document.createElement("button");
+      const installed = installedSkins.some((item) => item.md5 === skin.md5);
+      card.type = "button";
+      card.className = "skin-result";
+      card.dataset.index = String(index);
+      card.setAttribute("role", "option");
+      card.setAttribute("aria-selected", String(index === selectedIndex));
+
+      const image = document.createElement("img");
+      image.src = skin.screenshot_url;
+      image.alt = "";
+      image.loading = "lazy";
+      const name = document.createElement("span");
+      name.textContent = skin.filename.replace(/\.wsz$/i, "");
+      card.append(image, name);
+      if (installed) {
+        const badge = document.createElement("small");
+        badge.textContent = "INSTALLED";
+        card.append(badge);
+      }
+      fragment.append(card);
+    });
+    resultsElement.append(fragment);
+    applyButton.disabled = selectedIndex < 0;
+  };
+
+  const loadPage = async () => {
+    const currentRequest = ++requestId;
+    submitButton.disabled = true;
+    prevButton.disabled = true;
+    nextButton.disabled = true;
+    applyButton.disabled = true;
+    input.disabled = true;
+    status.textContent = "SKIN MUSEUM YÜKLENİYOR...";
+    status.dataset.state = "loading";
+    resultsElement.replaceChildren();
+
+    try {
+      const page = await fetchSkinMuseumPage(query, offset);
+      if (currentRequest !== requestId) return;
+      results = page.skins;
+      hasNext = page.hasNext;
+      selectedIndex = results.length > 0 ? 0 : -1;
+      renderResults();
+      const firstResult = results.length > 0 ? offset + 1 : 0;
+      const lastResult = offset + results.length;
+      const total = page.total == null ? "" : ` / ${page.total.toLocaleString()}`;
+      status.textContent = results.length > 0
+        ? `${firstResult}-${lastResult}${total} SKINS • SELECT AND APPLY`
+        : "SKIN BULUNAMADI";
+      status.dataset.state = results.length > 0 ? "success" : "error";
+      pageElement.textContent = String(Math.floor(offset / SKIN_PAGE_SIZE) + 1);
+    } catch (error) {
+      if (currentRequest !== requestId) return;
+      results = [];
+      selectedIndex = -1;
+      status.textContent = `SKIN MUSEUM HATASI: ${String(error)}`;
+      status.dataset.state = "error";
+    } finally {
+      if (currentRequest !== requestId) return;
+      submitButton.disabled = false;
+      input.disabled = false;
+      prevButton.disabled = offset === 0;
+      nextButton.disabled = !hasNext;
+      applyButton.disabled = selectedIndex < 0;
+    }
+  };
+
+  const applySelected = async () => {
+    const skin = results[selectedIndex];
+    if (!skin) return;
+    applyButton.disabled = true;
+    closeButton.disabled = true;
+    status.textContent = `${skin.filename} İNDİRİLİYOR VE UYGULANIYOR...`;
+    status.dataset.state = "loading";
+    try {
+      await downloadAndApplySkin(skin);
+      close();
+    } catch (error) {
+      status.textContent = `SKIN HATASI: ${String(error)}`;
+      status.dataset.state = "error";
+      applyButton.disabled = false;
+      closeButton.disabled = false;
+    }
+  };
+
+  dialog.hidden = false;
+  closeButton.disabled = false;
+  input.value = "";
+  closeButton.onclick = close;
+  dialog.onkeydown = (event) => {
+    if (event.key === "Escape") close();
+  };
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    query = input.value.trim();
+    offset = 0;
+    void loadPage();
+  };
+  prevButton.onclick = () => {
+    offset = Math.max(0, offset - SKIN_PAGE_SIZE);
+    void loadPage();
+  };
+  nextButton.onclick = () => {
+    if (!hasNext) return;
+    offset += SKIN_PAGE_SIZE;
+    void loadPage();
+  };
+  resultsElement.onclick = (event) => {
+    const card = (event.target as HTMLElement).closest<HTMLElement>(".skin-result");
+    if (!card) return;
+    selectedIndex = Number(card.dataset.index);
+    renderResults();
+  };
+  resultsElement.ondblclick = (event) => {
+    const card = (event.target as HTMLElement).closest<HTMLElement>(".skin-result");
+    if (!card) return;
+    selectedIndex = Number(card.dataset.index);
+    void applySelected();
+  };
+  applyButton.onclick = () => void applySelected();
+  window.setTimeout(() => input.focus(), 0);
+  void loadPage();
+}
+
 webamp = new Webamp({
   __customMediaClass: LibrespotMedia,
+  initialSkin: initialSkinUrl ? { url: initialSkinUrl } : undefined,
+  availableSkins: skinMenuEntries(),
   initialTracks: savedPlaylist.length > 0 ? savedPlaylist : [connectionPlaceholder],
   windowLayout: {
     main: { position: { left: 0, top: 0 } },
@@ -682,6 +1163,7 @@ function openSpotifyPlaylistDialog(): Promise<PlaylistInputTrack[] | null> {
   const form = document.querySelector<HTMLFormElement>("#spotify-playlist-form")!;
   const input = document.querySelector<HTMLInputElement>("#spotify-playlist-input")!;
   const closeButton = document.querySelector<HTMLButtonElement>("#playlist-search-close")!;
+  const fullscreenButton = document.querySelector<HTMLButtonElement>("#playlist-search-fullscreen")!;
   const submitButton = document.querySelector<HTMLButtonElement>("#playlist-search-submit")!;
   const loadButton = document.querySelector<HTMLButtonElement>("#playlist-load")!;
   const shuffle = document.querySelector<HTMLInputElement>("#playlist-shuffle")!;
@@ -695,6 +1177,7 @@ function openSpotifyPlaylistDialog(): Promise<PlaylistInputTrack[] | null> {
   status.dataset.state = "loading";
   resultsElement.replaceChildren();
   loadButton.disabled = true;
+  const restoreFullscreen = bindDialogFullscreen(dialog, fullscreenButton);
   window.setTimeout(() => input.focus(), 0);
 
   return new Promise((resolve) => {
@@ -704,6 +1187,7 @@ function openSpotifyPlaylistDialog(): Promise<PlaylistInputTrack[] | null> {
 
     const finish = (tracks: PlaylistInputTrack[] | null) => {
       if (urlSearchTimer != null) window.clearTimeout(urlSearchTimer);
+      restoreFullscreen();
       dialog.hidden = true;
       form.onsubmit = null;
       input.oninput = null;
@@ -957,7 +1441,49 @@ void webamp.renderInto(document.querySelector<HTMLElement>("#webamp-container")!
   ).fontFamily;
   document.documentElement.style.setProperty("--playlist-font", playlistFont);
   syncWebampMetadata(latestStatus);
+  openOnboardingDialog();
   window.setTimeout(() => void checkForAppUpdate(), 1500);
+
+  const injectExploreSkinsMenuItem = () => {
+    const menu = document.querySelector("#webamp-context-menu");
+    if (!menu) return;
+    menu.querySelectorAll<HTMLElement>("li.parent").forEach((parent) => {
+      const isSkinsMenu = [...parent.childNodes].some(
+        (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim() === "Skins",
+      );
+      if (!isSkinsMenu) return;
+      const list = parent.querySelector(":scope > ul");
+      if (!list || list.querySelector(".winampfy-explore-skins")) return;
+      const loadSkin = [...list.children].find((item) => item.textContent?.trim() === "Load Skin...");
+      if (!loadSkin) return;
+      const explore = document.createElement("li");
+      explore.className = "winampfy-explore-skins";
+      explore.textContent = "Explore Skins...";
+      loadSkin.insertAdjacentElement("afterend", explore);
+    });
+  };
+  const skinMenuObserver = new MutationObserver(injectExploreSkinsMenuItem);
+  skinMenuObserver.observe(document.body, { childList: true, subtree: true });
+  injectExploreSkinsMenuItem();
+
+  document.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("#webamp-context-menu .winampfy-explore-skins")) {
+      event.preventDefault();
+      openSkinExplorerDialog();
+      return;
+    }
+
+    const skinMenuItem = target.closest<HTMLElement>("#webamp-context-menu li");
+    if (!skinMenuItem) return;
+    const label = skinMenuItem.textContent?.trim();
+    const installed = installedSkins.find((skin) => skin.name === label);
+    if (installed) {
+      localStorage.setItem(ACTIVE_SKIN_STORAGE_KEY, installed.url);
+    } else if (label === "<Base Skin>" || label === "Load Skin...") {
+      localStorage.removeItem(ACTIVE_SKIN_STORAGE_KEY);
+    }
+  }, true);
 
   // Webamp's lightning-bolt logo is its built-in About control. Keep that
   // authentic hotspot and show Winampfy's native-styled About window instead.
