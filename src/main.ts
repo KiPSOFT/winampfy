@@ -396,7 +396,7 @@ app.innerHTML = `
 let updateCheckStarted = false;
 
 async function checkForAppUpdate() {
-  if (window.location.hostname === "localhost" || updateCheckStarted) return;
+  if (import.meta.env.DEV || updateCheckStarted) return;
   updateCheckStarted = true;
   try {
     const update = await check();
