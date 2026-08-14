@@ -33,10 +33,28 @@ jobs:
             platform: windows-latest
             target: x86_64-pc-windows-msvc
             args: --target x86_64-pc-windows-msvc
+          - name: Linux x64 AppImage (Arch compatible)
+            platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            args: --target x86_64-unknown-linux-gnu --bundles appimage
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libfuse2 \
+            patchelf
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -78,7 +96,11 @@ jobs:
           releaseBody: |
             Download the installer for your platform from the assets below.
 
+            Arch Linux users can download and run the x86_64 AppImage.
+
             Aşağıdaki dosyalardan platformunuza uygun kurulumu indirebilirsiniz.
+
+            Arch Linux kullanıcıları x86_64 AppImage dosyasını indirip çalıştırabilir.
           releaseDraft: false
           prerelease: false
           generateReleaseNotes: true

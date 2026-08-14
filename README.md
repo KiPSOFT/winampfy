@@ -5,7 +5,7 @@
 <h1 align="center">Winampfy</h1>
 
 <p align="center">
-  A native, Winamp 2-style Spotify Premium player for macOS and Windows.
+  A native, Winamp 2-style Spotify Premium player for macOS, Windows and Linux.
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@ Winampfy combines Webamp's faithful Winamp 2.x interface with a native Tauri she
 ## Features
 
 - Authentic Winamp 2.x windows and `.wsz` skin support through Webamp
-- Native, frameless and draggable macOS/Windows desktop window
+- Native, frameless and draggable macOS/Windows/Linux desktop window
 - Direct Spotify audio playback powered by librespot
 - Spotify search inside a Winamp-styled dialog
 - Multi-select search results and queue playback
@@ -50,6 +50,7 @@ Installers are attached to [GitHub Releases](https://github.com/KiPSOFT/winampfy
 - **macOS Apple Silicon:** download the `aarch64` DMG
 - **macOS Intel:** download the `x86_64` DMG
 - **Windows x64:** download the NSIS `.exe` or WiX `.msi` installer
+- **Arch Linux x64:** download the `.AppImage`, make it executable and launch it
 
 The public builds are currently not notarized or signed with a commercial certificate. On macOS, you may need to approve the application under **System Settings → Privacy & Security**. Windows SmartScreen may also display an unknown-publisher warning.
 
@@ -72,6 +73,7 @@ Authentication is handled in the browser. Winampfy receives an access token thro
 - Platform prerequisites from the [Tauri documentation](https://v2.tauri.app/start/prerequisites/)
   - macOS: Xcode Command Line Tools
   - Windows: Microsoft C++ Build Tools and WebView2
+  - Arch Linux: `webkit2gtk-4.1`, `libappindicator-gtk3`, `alsa-lib` and the other packages listed in the Tauri prerequisites
 
 ```sh
 npm ci
@@ -88,11 +90,12 @@ npm run tauri -- build
 
 ## Releases
 
-The [release workflow](.github/workflows/release.yml) builds three targets in parallel:
+The [release workflow](.github/workflows/release.yml) builds four targets in parallel:
 
 - macOS Apple Silicon (`aarch64-apple-darwin`)
 - macOS Intel (`x86_64-apple-darwin`)
 - Windows x64 (`x86_64-pc-windows-msvc`)
+- Linux x64 AppImage (`x86_64-unknown-linux-gnu`), compatible with Arch Linux
 
 Push a version tag matching the versions in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`:
 

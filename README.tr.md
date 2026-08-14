@@ -5,7 +5,7 @@
 <h1 align="center">Winampfy</h1>
 
 <p align="center">
-  macOS ve Windows için native, Winamp 2 görünümlü Spotify Premium oynatıcısı.
+  macOS, Windows ve Linux için native, Winamp 2 görünümlü Spotify Premium oynatıcısı.
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@ Winampfy, Webamp'ın Winamp 2.x arayüzünü native Tauri kabuğu ve librespot �
 ## Özellikler
 
 - Webamp ile gerçek Winamp 2.x pencereleri ve `.wsz` skin desteği
-- Native, çerçevesiz ve sürüklenebilir macOS/Windows masaüstü penceresi
+- Native, çerçevesiz ve sürüklenebilir macOS/Windows/Linux masaüstü penceresi
 - librespot ile doğrudan Spotify ses oynatma
 - Winamp stilindeki pencere içinde Spotify araması
 - Arama sonuçlarından çoklu seçim ve sıralı playlist oynatma
@@ -50,6 +50,7 @@ Kurulum dosyaları [GitHub Releases](https://github.com/KiPSOFT/winampfy/release
 - **Apple Silicon macOS:** `aarch64` DMG dosyasını indirin
 - **Intel macOS:** `x86_64` DMG dosyasını indirin
 - **Windows x64:** NSIS `.exe` veya WiX `.msi` kurulumunu indirin
+- **Arch Linux x64:** `.AppImage` dosyasını indirin, çalıştırılabilir yapın ve açın
 
 Herkese açık derlemeler şu anda Apple notarization veya ticari kod imzalama sertifikası kullanmıyor. macOS'ta uygulamayı **Sistem Ayarları → Gizlilik ve Güvenlik** bölümünden onaylamanız gerekebilir. Windows SmartScreen de bilinmeyen yayıncı uyarısı gösterebilir.
 
@@ -72,6 +73,7 @@ Kimlik doğrulama tarayıcıda yapılır. Winampfy, erişim anahtarını localho
 - [Tauri dokümantasyonundaki](https://v2.tauri.app/start/prerequisites/) platform gereksinimleri
   - macOS: Xcode Command Line Tools
   - Windows: Microsoft C++ Build Tools ve WebView2
+  - Arch Linux: `webkit2gtk-4.1`, `libappindicator-gtk3`, `alsa-lib` ve Tauri gereksinimlerindeki diğer paketler
 
 ```sh
 npm ci
@@ -88,11 +90,12 @@ npm run tauri -- build
 
 ## Release oluşturma
 
-[Release workflow'u](.github/workflows/release.yml) üç hedefi paralel derler:
+[Release workflow'u](.github/workflows/release.yml) dört hedefi paralel derler:
 
 - Apple Silicon macOS (`aarch64-apple-darwin`)
 - Intel macOS (`x86_64-apple-darwin`)
 - Windows x64 (`x86_64-pc-windows-msvc`)
+- Arch Linux uyumlu Linux x64 AppImage (`x86_64-unknown-linux-gnu`)
 
 `package.json`, `src-tauri/Cargo.toml` ve `src-tauri/tauri.conf.json` içindeki sürümle eşleşen bir etiket gönderin:
 
