@@ -114,6 +114,9 @@ class LibrespotMedia {
   private appliedVolume = 72;
   private volumeUpdateInFlight = false;
   private volumeSyncTimer: number | null = null;
+  private frozenPositionAt = 0;
+  private frozenPositionMs = -1;
+  private recoveredAfterStall = false;
 
   constructor() {
     this.analyser.fftSize = 256;
@@ -143,6 +146,7 @@ class LibrespotMedia {
         this.lastAdvanceSequence = latestStatus.advance_sequence;
         this.emit("ended");
       }
+      this.monitorPlaybackProgress();
       this.emit("timeupdate");
       syncWebampMetadata(latestStatus);
     } catch {
@@ -155,6 +159,65 @@ class LibrespotMedia {
     const callbacks = this.listeners.get(event) ?? new Set<MediaCallback>();
     callbacks.add(callback);
     this.listeners.set(event, callbacks);
+  }
+
+  // Webamp relies on librespot pushing a steady stream of position updates
+  // while "playing". A network hiccup can wedge librespot so it keeps
+  // reporting "playing" without ever advancing or delivering the next event.
+  // Detect the frozen position and restart the current track before the whole
+  // transport becomes unresponsive (next / play would silently no-op).
+  private monitorPlaybackProgress() {
+    if (latestStatus.state !== "playing" || this.loadingTrack) {
+      this.frozenPositionAt = 0;
+      return;
+    }
+    const positionMs = latestStatus.position_ms;
+    const durationMs = latestStatus.duration_ms;
+    if (positionMs == null || durationMs == null || positionMs >= durationMs - 2500) return;
+
+    const now = Date.now();
+    if (positionMs === this.frozenPositionMs) {
+      if (this.frozenPositionAt === 0) {
+        this.frozenPositionAt = now;
+      } else if (now - this.frozenPositionAt > 10_000 && !this.recoveredAfterStall) {
+        this.frozenPositionAt = 0;
+        void this.recoverFromStall();
+      }
+    } else {
+      this.frozenPositionMs = positionMs;
+      this.frozenPositionAt = 0;
+      this.recoveredAfterStall = false;
+    }
+  }
+
+  private async recoverFromStall() {
+    this.recoveredAfterStall = true;
+    console.warn("Winampfy playback stalled; restarting the current track");
+    const url = this.currentUrl;
+    try {
+      if (url === "spotify:current") {
+        await invoke("player_play");
+      } else {
+        await invoke("player_load_uri", { uri: url, autoPlay: true });
+      }
+    } catch (error) {
+      // The media stream cannot be loaded any more; the session is likely
+      // dead. Rebuild it and retry once.
+      console.warn("Winampfy stalled track recovery failed; reconnecting", error);
+      try {
+        latestStatus = await invoke<PlayerStatus>("spotify_login");
+        if (url === "spotify:current") {
+          await invoke("player_play");
+        } else {
+          await invoke("player_load_uri", { uri: url, autoPlay: true });
+        }
+      } catch (secondError) {
+        console.warn("Winampfy could not restart the stalled track", secondError);
+      }
+    } finally {
+      this.frozenPositionMs = -1;
+      this.frozenPositionAt = 0;
+    }
   }
 
   timeElapsed() {
@@ -241,8 +304,24 @@ class LibrespotMedia {
         const loaded = await this.waitForTrackChange(trackSequence, loadGeneration);
         if (this.loadGeneration !== loadGeneration) return;
         if (!loaded) {
+          // The load command was accepted but the backend never delivered any
+          // metadata. This usually means the Spotify session is dead (all
+          // commands silently no-op). Reconnect and retry once before giving up
+          // on this track.
           console.warn("Winampfy timed out while waiting for track metadata", url);
-          return;
+          try {
+            latestStatus = await invoke<PlayerStatus>("spotify_login");
+          } catch (error) {
+            console.warn("Winampfy reconnection after load timeout failed", error);
+          }
+          if (this.loadGeneration !== loadGeneration) return;
+          const retryTrackSequence = latestStatus.track_sequence;
+          await invoke("player_load_uri", { uri: url, autoPlay }).catch((error) => {
+            console.warn("Winampfy retry track load failed", error);
+          });
+          const retried = await this.waitForTrackChange(retryTrackSequence, loadGeneration);
+          if (this.loadGeneration !== loadGeneration) return;
+          if (!retried) return;
         }
       }
       releaseWaiting();

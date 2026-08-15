@@ -101,10 +101,47 @@ impl PlayerState {
             mixer: Arc::new(Mutex::new(None)),
         }
     }
+
+    /// Detects whether the librespot session behind the player has died.
+    ///
+    /// librespot marks the session invalid on connection loss, so a survivor
+    /// handle in the slot no longer delivers any audio. Keeping that stale
+    /// handle around makes every subsequent play/next/load a silent no-op and
+    /// wedges the frontend at an old track and position forever.
+    fn has_dead_session(&self) -> bool {
+        self.session
+            .lock()
+            .map(|guard| guard.as_ref().is_some_and(|session| session.is_invalid()))
+            .unwrap_or(false)
+    }
+
+    /// Drops the stale player pipeline so the next connection starts from scratch.
+    fn clear_player(&self) {
+        if let Ok(mut slot) = self.spirc.lock() {
+            *slot = None;
+        }
+        if let Ok(mut slot) = self.session.lock() {
+            *slot = None;
+        }
+        if let Ok(mut slot) = self.mixer.lock() {
+            *slot = None;
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn player_status(state: State<'_, PlayerState>) -> Result<PlayerStatus, String> {
+    if state.has_dead_session() {
+        state.clear_player();
+        let mut current = state.status.write().await;
+        current.state = "disconnected".into();
+        current.message = "Spotify bağlantısı koptu — yeniden bağlanmak için ÇAL'a basın".into();
+        current.track_title = None;
+        current.artist = None;
+        current.track_uri = None;
+        current.duration_ms = None;
+        current.position_ms = None;
+    }
     Ok(state.status.read().await.clone())
 }
 
@@ -113,14 +150,18 @@ pub async fn spotify_login(
     app: AppHandle,
     state: State<'_, PlayerState>,
 ) -> Result<PlayerStatus, String> {
-    if state
-        .spirc
-        .lock()
-        .map_err(|_| "Playback state lock failed".to_string())?
-        .is_some()
+    if !state.has_dead_session()
+        && state
+            .spirc
+            .lock()
+            .map_err(|_| "Playback state lock failed".to_string())?
+            .is_some()
     {
         return Ok(state.status.read().await.clone());
     }
+    // The stored player belongs to a session that died, or there is no player
+    // yet. Either way the old pipeline cannot be reused and must be rebuilt.
+    state.clear_player();
 
     set_connection_status(
         &state.status,
@@ -325,6 +366,15 @@ async fn watch_player_events(
             }
             _ => {}
         }
+    }
+    // The player event channel only closes when the SpircTask's Player was
+    // destroyed, which happens once the Spotify session becomes invalid. Leave
+    // a durable marker so player_status can treat the stale pipeline as dead
+    // and let the next login rebuild it.
+    let mut current = status.write().await;
+    if current.state != "disconnected" {
+        current.state = "error".into();
+        current.message = "Spotify oturumu kapandı".into();
     }
 }
 
