@@ -117,6 +117,7 @@ class LibrespotMedia {
   private frozenPositionAt = 0;
   private frozenPositionMs = -1;
   private recoveredAfterStall = false;
+  private reconnectingAfterDrop = false;
 
   constructor() {
     this.analyser.fftSize = 256;
@@ -147,6 +148,7 @@ class LibrespotMedia {
         this.emit("ended");
       }
       this.monitorPlaybackProgress();
+      this.reconnectIfDropped(previous);
       this.emit("timeupdate");
       syncWebampMetadata(latestStatus);
     } catch {
@@ -218,6 +220,39 @@ class LibrespotMedia {
       this.frozenPositionMs = -1;
       this.frozenPositionAt = 0;
     }
+  }
+
+  // If playback is wanted but the Spotify session dies underneath it, the
+  // backend flips to "disconnected". Reconnect automatically (using the cached
+  // credentials, no browser needed) and resume the current track instead of
+  // leaving the user staring at a "Press Play to reconnect" prompt.
+  private reconnectIfDropped(previous: PlayerStatus) {
+    if (this.reconnectingAfterDrop) return;
+    const dropped = latestStatus.state === "disconnected"
+      || latestStatus.state === "error";
+    const wasActive = previous.state === "playing"
+      || previous.state === "paused"
+      || previous.state === "loading";
+    if (!dropped || !wasActive) return;
+
+    this.reconnectingAfterDrop = true;
+    void (async () => {
+      const url = this.currentUrl;
+      const wasPlaying = previous.state === "playing";
+      try {
+        console.warn("Winampfy session dropped; reconnecting automatically");
+        latestStatus = await invoke<PlayerStatus>("spotify_login");
+        if (url !== "spotify:current" && latestStatus.track_title == null) {
+          await invoke("player_load_uri", { uri: url, autoPlay: true });
+        } else if (wasPlaying) {
+          await invoke("player_play");
+        }
+      } catch (error) {
+        console.warn("Winampfy automatic reconnection failed", error);
+      } finally {
+        this.reconnectingAfterDrop = false;
+      }
+    })();
   }
 
   timeElapsed() {

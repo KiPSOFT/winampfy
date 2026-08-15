@@ -22,6 +22,24 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+// macOS puts hidden/background apps to sleep ("App Nap"), which throttles the
+// whole process. That stalls librespot's streaming and eventually drops the
+// Spotify session, so after returning to the foreground the app has to
+// reconnect before playback can resume. Holding an NSProcessInfo activity for
+// the app's lifetime keeps the process awake while it is in the background.
+#[cfg(target_os = "macos")]
+fn prevent_app_nap() {
+    use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+    // The activity token must stay alive for the process lifetime to keep the
+    // app awake in the background; intentionally leaking it is the point.
+    let activity =
+        NSProcessInfo::processInfo().beginActivityWithOptions_reason(
+            NSActivityOptions::UserInteractive | NSActivityOptions::SuddenTerminationDisabled | NSActivityOptions::AutomaticTerminationDisabled,
+            &NSString::from_str("Winampfy playback"),
+        );
+    std::mem::forget(activity);
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -35,6 +53,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            prevent_app_nap();
+
             // Keep the tray icon independent from the OS/application icon cache.
             // Embedding the PNG also makes dev and packaged builds use exactly
             // the same artwork.

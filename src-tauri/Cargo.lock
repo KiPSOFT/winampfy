@@ -6391,11 +6391,12 @@ dependencies = [
 
 [[package]]
 name = "winampfy"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "librespot",
  "librespot-oauth",
  "log",
+ "objc2-foundation",
  "protobuf",
  "serde",
  "serde_json",
