@@ -6391,7 +6391,7 @@ dependencies = [
 
 [[package]]
 name = "winampfy"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "librespot",
  "librespot-oauth",
