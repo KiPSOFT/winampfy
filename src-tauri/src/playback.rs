@@ -90,6 +90,10 @@ pub struct PlayerState {
     spirc: Arc<Mutex<Option<Spirc>>>,
     session: Arc<Mutex<Option<Session>>>,
     mixer: Arc<Mutex<Option<Arc<dyn mixer::Mixer>>>>,
+    queue: Arc<Mutex<Vec<String>>>,
+    current_index: Arc<Mutex<Option<usize>>>,
+    last_uri: Arc<Mutex<Option<String>>>,
+    last_load_at: Arc<Mutex<std::time::Instant>>,
 }
 
 impl PlayerState {
@@ -99,6 +103,10 @@ impl PlayerState {
             spirc: Arc::new(Mutex::new(None)),
             session: Arc::new(Mutex::new(None)),
             mixer: Arc::new(Mutex::new(None)),
+            queue: Arc::new(Mutex::new(Vec::new())),
+            current_index: Arc::new(Mutex::new(None)),
+            last_uri: Arc::new(Mutex::new(None)),
+            last_load_at: Arc::new(Mutex::new(std::time::Instant::now())),
         }
     }
 
@@ -125,6 +133,241 @@ impl PlayerState {
         }
         if let Ok(mut slot) = self.mixer.lock() {
             *slot = None;
+        }
+    }
+
+    /// Spawns a background task that keeps playback alive without any JS timer.
+    ///
+    /// WKWebView throttles the window's JavaScript timers while it is occluded
+    /// in the background. That used to freeze every recovery path (stall
+    /// restart, session reconnect and next-track advance). This Rust task runs
+    /// on its own and takes over those duties whenever playback appears stuck:
+    /// it reconnects a dead session with the cached credentials, restarts a
+    /// stalled track and advances to the next queued track once the frontend
+    /// has not done so within a short grace period.
+    pub fn spawn_guardian(&self, app: AppHandle) {
+        let status = self.status.clone();
+        let spirc_slot = self.spirc.clone();
+        let session_slot = self.session.clone();
+        let mixer_slot = self.mixer.clone();
+        let queue = self.queue.clone();
+        let current_index = self.current_index.clone();
+        let last_uri = self.last_uri.clone();
+        let last_load_at = self.last_load_at.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut position_tracker = PositionTracker::new();
+            let mut last_reconnect_at = std::time::Instant::now() - Duration::from_secs(30);
+            let mut last_advance_sequence = 0u64;
+            let mut pending_advance: Option<std::time::Instant> = None;
+            loop {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let snapshot = status.read().await.clone();
+
+                // 1) A dead session should be rebuilt automatically when we
+                // were mid-playback. Use cached credentials; no browser needed.
+                let session_invalid = session_slot
+                    .lock()
+                    .map(|guard| {
+                        guard
+                            .as_ref()
+                            .is_some_and(|session| session.is_invalid())
+                    })
+                    .unwrap_or(false);
+                let reconnect_due = last_reconnect_at.elapsed() > Duration::from_secs(10);
+                if session_invalid
+                    && reconnect_due
+                    && matches!(
+                        snapshot.state.as_str(),
+                        "playing" | "paused" | "loading" | "ended"
+                    )
+                {
+                    last_reconnect_at = std::time::Instant::now();
+                    tauri::async_runtime::spawn(recover_session(
+                        app.clone(),
+                        status.clone(),
+                        spirc_slot.clone(),
+                        session_slot.clone(),
+                        mixer_slot.clone(),
+                        last_uri.clone(),
+                    ));
+                    continue;
+                }
+
+                // 2. Auto-advance: when the backend records an EndOfTrack /
+                // Unavailable (advance_sequence bumped), the frontend normally
+                // loads the next queued track. If the JavaScript timers are
+                // frozen in the background that never happens, so advance once
+                // after a grace period unless a fresh load arrived meanwhile.
+                if snapshot.advance_sequence != last_advance_sequence {
+                    last_advance_sequence = snapshot.advance_sequence;
+                    pending_advance = Some(std::time::Instant::now());
+                }
+                let advanced_recently = last_load_at
+                    .lock()
+                    .map(|last| last.elapsed() < Duration::from_secs(3))
+                    .unwrap_or(true);
+                if let Some(advance_at) = pending_advance {
+                    if advance_at.elapsed() > Duration::from_secs(3) && !advanced_recently {
+                        pending_advance = None;
+                        advance_queued_track(
+                            spirc_slot.clone(),
+                            queue.clone(),
+                            current_index.clone(),
+                            last_uri.clone(),
+                        );
+                        continue;
+                    }
+                    if advanced_recently {
+                        pending_advance = None;
+                    }
+                }
+
+                // 3. Stall recovery: the stream froze at a fixed position
+                // while reported as playing. Restart the current track once.
+                position_tracker = position_tracker.observe(&snapshot);
+                if position_tracker.stalled {
+                    position_tracker = PositionTracker::new();
+                    if let Some(uri) = last_uri.lock().ok().and_then(|slot| slot.clone()) {
+                        if uri != "spotify:current" {
+                            let _ = restart_track(spirc_slot.clone(), uri);
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+struct PositionTracker {
+    last_position_ms: Option<u32>,
+    last_position_at: Option<std::time::Instant>,
+    stalled: bool,
+}
+
+impl PositionTracker {
+    fn new() -> Self {
+        Self {
+            last_position_ms: None,
+            last_position_at: None,
+            stalled: false,
+        }
+    }
+
+    fn observe(mut self, status: &PlayerStatus) -> Self {
+        if status.state != "playing" {
+            return Self::new();
+        }
+        let position = status.position_ms;
+        if position == self.last_position_ms {
+            if let Some(at) = self.last_position_at {
+                if at.elapsed() > Duration::from_secs(12) {
+                    self.stalled = true;
+                }
+            } else {
+                self.last_position_at = Some(std::time::Instant::now());
+            }
+        } else {
+            self.last_position_ms = position;
+            self.last_position_at = Some(std::time::Instant::now());
+        }
+        self
+    }
+}
+
+/// Restarts the track `uri` from the beginning. Used when the stream froze
+/// mid-track while nominally "playing".
+fn restart_track(
+    spirc_slot: Arc<Mutex<Option<Spirc>>>,
+    uri: String,
+) -> Result<(), String> {
+    let options = LoadRequestOptions {
+        start_playing: true,
+        ..LoadRequestOptions::default()
+    };
+    with_loaded_spirc(spirc_slot, |spirc| {
+        spirc.load(LoadRequest::from_tracks(vec![uri], options))
+    })
+}
+
+/// Advances to the next kind in the stored queue. Runs only when the frontend
+/// was too slow to load the next track itself (its JS timers are throttled in
+/// the background).
+fn advance_queued_track(
+    spirc_slot: Arc<Mutex<Option<Spirc>>>,
+    queue: Arc<Mutex<Vec<String>>>,
+    current_index: Arc<Mutex<Option<usize>>>,
+    last_uri: Arc<Mutex<Option<String>>>,
+) {
+    let index = current_index
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
+        .unwrap_or(0);
+    let next = queue
+        .lock()
+        .ok()
+        .and_then(|queue| queue.get(index + 1).cloned());
+    let Some(uri) = next else {
+        return;
+    };
+    if let Ok(mut index_guard) = current_index.lock() {
+        *index_guard = Some(index + 1);
+    }
+    if let Ok(mut last) = last_uri.lock() {
+        *last = Some(uri.clone());
+    }
+    let options = LoadRequestOptions {
+        start_playing: true,
+        ..LoadRequestOptions::default()
+    };
+    let _ = with_loaded_spirc(spirc_slot, |spirc| {
+        spirc.load(LoadRequest::from_tracks(vec![uri], options))
+    });
+}
+
+fn with_loaded_spirc(
+    spirc_slot: Arc<Mutex<Option<Spirc>>>,
+    action: impl FnOnce(&Spirc) -> Result<(), librespot::core::Error>,
+) -> Result<(), String> {
+    let guard = spirc_slot
+        .lock()
+        .map_err(|_| "Playback state lock failed".to_string())?;
+    let spirc = guard
+        .as_ref()
+        .ok_or_else(|| "Önce Spotify hesabınızı bağlayın".to_string())?;
+    action(spirc).map_err(|error| error.to_string())
+}
+
+/// Rebuilds the player pipeline after a session loss. Uses the cached Spotify
+/// credentials so no browser interaction is required; the frontend keeps
+/// working while this runs in the background.
+async fn recover_session(
+    app: AppHandle,
+    status: Arc<RwLock<PlayerStatus>>,
+    spirc_slot: Arc<Mutex<Option<Spirc>>>,
+    session_slot: Arc<Mutex<Option<Session>>>,
+    mixer_slot: Arc<Mutex<Option<Arc<dyn mixer::Mixer>>>>,
+    last_uri: Arc<Mutex<Option<String>>>,
+) {
+    set_connection_status(&status, "connecting", "Spotify oturumu yeniden kuruluyor").await;
+    let result = initialise_player(
+        &app,
+        status.clone(),
+        spirc_slot.clone(),
+        session_slot.clone(),
+        mixer_slot.clone(),
+    )
+    .await;
+    if let Err(error) = result {
+        set_connection_status(&status, "error", &error).await;
+        return;
+    }
+    set_connection_status(&status, "ready", "Yeniden bağlandı").await;
+
+    // Resume whatever was playing before the drop.
+    if let Some(uri) = last_uri.lock().ok().and_then(|slot| slot.clone()) {
+        if uri != "spotify:current" {
+            let _ = restart_track(spirc_slot, uri);
         }
     }
 }
@@ -491,6 +734,14 @@ pub fn player_load_uri(
     state: State<'_, PlayerState>,
 ) -> Result<(), String> {
     let uri = normalise_spotify_uri(&uri)?;
+    *state
+        .last_uri
+        .lock()
+        .map_err(|_| "Playback state lock failed".to_string())? = Some(uri.clone());
+    *state
+        .last_load_at
+        .lock()
+        .map_err(|_| "Playback state lock failed".to_string())? = std::time::Instant::now();
     let options = LoadRequestOptions {
         start_playing: auto_play.unwrap_or(true),
         ..LoadRequestOptions::default()
@@ -501,6 +752,39 @@ pub fn player_load_uri(
         LoadRequest::from_context_uri(uri, options)
     };
     with_spirc(&state, |spirc| spirc.load(request))
+}
+
+#[tauri::command]
+pub fn player_set_queue(uris: Vec<String>, state: State<'_, PlayerState>) -> Result<(), String> {
+    let queue = uris
+        .into_iter()
+        .filter_map(|uri| normalise_spotify_uri(&uri).ok())
+        .collect::<Vec<_>>();
+    let mut slot = state
+        .queue
+        .lock()
+        .map_err(|_| "Playback state lock failed".to_string())?;
+    *slot = queue;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn player_set_current(
+    uri: String,
+    state: State<'_, PlayerState>,
+) -> Result<(), String> {
+    let uri = normalise_spotify_uri(&uri)?;
+    let index = state
+        .queue
+        .lock()
+        .map_err(|_| "Playback state lock failed".to_string())?
+        .iter()
+        .position(|track| *track == uri);
+    *state
+        .current_index
+        .lock()
+        .map_err(|_| "Playback state lock failed".to_string())? = index;
+    Ok(())
 }
 
 #[tauri::command]

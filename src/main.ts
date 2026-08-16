@@ -307,6 +307,7 @@ class LibrespotMedia {
     lastMetadataKey = "";
     this.loadingTrack = true;
     this.emit("waiting");
+    void invoke("player_set_current", { uri: url }).catch(() => {});
     let waiting = true;
     const releaseWaiting = () => {
       if (!waiting) return;
@@ -1623,6 +1624,11 @@ webamp.store.subscribe(() => {
   if (serialized === lastSavedPlaylist) return;
   lastSavedPlaylist = serialized;
   localStorage.setItem(PLAYLIST_STORAGE_KEY, serialized);
+  // Keep the Rust guard in sync so it can advance to the next queued track
+  // when the webview's JS timers are throttled in the background.
+  void invoke("player_set_queue", {
+    uris: playlist.map((track) => track.url),
+  }).catch(() => {});
 });
 
 webamp.onClose(() => void invoke("quit_app"));

@@ -9,9 +9,9 @@ use tauri::{
 
 use playback::{
     PlayerState, player_load_uri, player_next, player_pause, player_play, player_previous,
-    player_seek, player_set_repeat, player_set_shuffle, player_set_volume, player_status,
-    player_stop, player_sync_volume, spotify_login, spotify_playlist_tracks, spotify_playlists,
-    spotify_search,
+    player_seek, player_set_current, player_set_queue, player_set_repeat, player_set_shuffle,
+    player_set_volume, player_status, player_stop, player_sync_volume, spotify_login,
+    spotify_playlist_tracks, spotify_playlists, spotify_search,
 };
 
 fn show_main_window(app: &AppHandle) {
@@ -55,6 +55,7 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             prevent_app_nap();
+            app.state::<PlayerState>().spawn_guardian(app.handle().clone());
 
             // Keep the tray icon independent from the OS/application icon cache.
             // Embedding the PNG also makes dev and packaged builds use exactly
@@ -102,6 +103,8 @@ pub fn run() {
             player_set_shuffle,
             player_set_repeat,
             player_load_uri,
+            player_set_queue,
+            player_set_current,
             spotify_search,
             spotify_playlists,
             spotify_playlist_tracks,
