@@ -114,10 +114,6 @@ class LibrespotMedia {
   private appliedVolume = 72;
   private volumeUpdateInFlight = false;
   private volumeSyncTimer: number | null = null;
-  private frozenPositionAt = 0;
-  private frozenPositionMs = -1;
-  private recoveredAfterStall = false;
-  private reconnectingAfterDrop = false;
 
   constructor() {
     this.analyser.fftSize = 256;
@@ -145,10 +141,13 @@ class LibrespotMedia {
       // same signal so one bad playlist entry cannot stop the whole queue.
       if (latestStatus.advance_sequence !== this.lastAdvanceSequence) {
         this.lastAdvanceSequence = latestStatus.advance_sequence;
-        this.emit("ended");
+        // While our timers were throttled the Rust guardian may have advanced
+        // through several tracks on its own. Re-align webamp with what the
+        // backend is actually playing before letting it advance blindly.
+        if (!reconcileWebampTrack()) {
+          this.emit("ended");
+        }
       }
-      this.monitorPlaybackProgress();
-      this.reconnectIfDropped(previous);
       this.emit("timeupdate");
       syncWebampMetadata(latestStatus);
     } catch {
@@ -163,97 +162,10 @@ class LibrespotMedia {
     this.listeners.set(event, callbacks);
   }
 
-  // Webamp relies on librespot pushing a steady stream of position updates
-  // while "playing". A network hiccup can wedge librespot so it keeps
-  // reporting "playing" without ever advancing or delivering the next event.
-  // Detect the frozen position and restart the current track before the whole
-  // transport becomes unresponsive (next / play would silently no-op).
-  private monitorPlaybackProgress() {
-    if (latestStatus.state !== "playing" || this.loadingTrack) {
-      this.frozenPositionAt = 0;
-      return;
-    }
-    const positionMs = latestStatus.position_ms;
-    const durationMs = latestStatus.duration_ms;
-    if (positionMs == null || durationMs == null || positionMs >= durationMs - 2500) return;
-
-    const now = Date.now();
-    if (positionMs === this.frozenPositionMs) {
-      if (this.frozenPositionAt === 0) {
-        this.frozenPositionAt = now;
-      } else if (now - this.frozenPositionAt > 10_000 && !this.recoveredAfterStall) {
-        this.frozenPositionAt = 0;
-        void this.recoverFromStall();
-      }
-    } else {
-      this.frozenPositionMs = positionMs;
-      this.frozenPositionAt = 0;
-      this.recoveredAfterStall = false;
-    }
-  }
-
-  private async recoverFromStall() {
-    this.recoveredAfterStall = true;
-    console.warn("Winampfy playback stalled; restarting the current track");
-    const url = this.currentUrl;
-    try {
-      if (url === "spotify:current") {
-        await invoke("player_play");
-      } else {
-        await invoke("player_load_uri", { uri: url, autoPlay: true });
-      }
-    } catch (error) {
-      // The media stream cannot be loaded any more; the session is likely
-      // dead. Rebuild it and retry once.
-      console.warn("Winampfy stalled track recovery failed; reconnecting", error);
-      try {
-        latestStatus = await invoke<PlayerStatus>("spotify_login");
-        if (url === "spotify:current") {
-          await invoke("player_play");
-        } else {
-          await invoke("player_load_uri", { uri: url, autoPlay: true });
-        }
-      } catch (secondError) {
-        console.warn("Winampfy could not restart the stalled track", secondError);
-      }
-    } finally {
-      this.frozenPositionMs = -1;
-      this.frozenPositionAt = 0;
-    }
-  }
-
-  // If playback is wanted but the Spotify session dies underneath it, the
-  // backend flips to "disconnected". Reconnect automatically (using the cached
-  // credentials, no browser needed) and resume the current track instead of
-  // leaving the user staring at a "Press Play to reconnect" prompt.
-  private reconnectIfDropped(previous: PlayerStatus) {
-    if (this.reconnectingAfterDrop) return;
-    const dropped = latestStatus.state === "disconnected"
-      || latestStatus.state === "error";
-    const wasActive = previous.state === "playing"
-      || previous.state === "paused"
-      || previous.state === "loading";
-    if (!dropped || !wasActive) return;
-
-    this.reconnectingAfterDrop = true;
-    void (async () => {
-      const url = this.currentUrl;
-      const wasPlaying = previous.state === "playing";
-      try {
-        console.warn("Winampfy session dropped; reconnecting automatically");
-        latestStatus = await invoke<PlayerStatus>("spotify_login");
-        if (url !== "spotify:current" && latestStatus.track_title == null) {
-          await invoke("player_load_uri", { uri: url, autoPlay: true });
-        } else if (wasPlaying) {
-          await invoke("player_play");
-        }
-      } catch (error) {
-        console.warn("Winampfy automatic reconnection failed", error);
-      } finally {
-        this.reconnectingAfterDrop = false;
-      }
-    })();
-  }
+  // Stall and session-drop recovery live in the Rust guardian on purpose:
+  // these JavaScript timers are throttled whenever the webview is occluded,
+  // which previously turned every recovery path here into a misfire that
+  // restarted tracks from stale positions.
 
   timeElapsed() {
     if (this.loadingTrack) return 0;
@@ -316,6 +228,20 @@ class LibrespotMedia {
     };
     try {
       if (url !== "spotify:current") {
+        if (
+          latestStatus.track_uri === url
+          && (latestStatus.state === "playing" || latestStatus.state === "loading")
+        ) {
+          // The backend is already streaming exactly this track: the Rust
+          // guardian advanced the queue while our timers were throttled.
+          // Adopt the live stream instead of reloading and restarting it.
+          releaseWaiting();
+          this.loadingTrack = false;
+          this.emit("fileLoaded");
+          this.emit("timeupdate");
+          return;
+        }
+
         if (latestStatus.state === "disconnected" || latestStatus.state === "error") {
           latestStatus = await invoke<PlayerStatus>("spotify_login");
         }
@@ -464,6 +390,35 @@ function syncWebampMetadata(status: PlayerStatus) {
       duration: status.duration_ms / 1000,
     });
   }
+}
+
+// While the webview's JavaScript timers are throttled in the background the
+// Rust guardian may advance through several queued tracks on its own. When
+// the window returns, catch webamp's selection up to whatever the backend is
+// actually playing instead of blindly emitting "ended" — that would advance a
+// single track from webamp's stale position and audibly jump back to an
+// already-played track.
+function reconcileWebampTrack(): boolean {
+  if (!webamp) return false;
+  const backendUri = latestStatus.track_uri;
+  if (backendUri == null) return false;
+  const tracks = webamp.getPlaylistTracks();
+  const backendIndex = tracks.findIndex((track) => track.url === backendUri);
+  if (backendIndex === -1) return false;
+  const currentId = webamp.store.getState().playlist.currentTrack;
+  const currentIndex = currentId == null
+    ? -1
+    : tracks.findIndex((track) => track.id === currentId);
+  if (backendIndex > currentIndex) {
+    // The guardian already loaded a later track; select it. The matching
+    // loadFromUrl call adopts the live stream instead of reloading it.
+    webamp.setCurrentTrack(backendIndex);
+    return true;
+  }
+  // Backend and webamp agree (e.g. the guardian merely restarted the current
+  // track after a stall). Only let webamp advance when the backend really
+  // finished the track.
+  return backendIndex === currentIndex && latestStatus.state !== "ended";
 }
 
 function loadSavedPlaylist(): PlaylistInputTrack[] {

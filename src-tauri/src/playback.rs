@@ -142,9 +142,9 @@ impl PlayerState {
     /// in the background. That used to freeze every recovery path (stall
     /// restart, session reconnect and next-track advance). This Rust task runs
     /// on its own and takes over those duties whenever playback appears stuck:
-    /// it reconnects a dead session with the cached credentials, restarts a
-    /// stalled track and advances to the next queued track once the frontend
-    /// has not done so within a short grace period.
+    /// it reconnects a dead session with the cached credentials, resumes a
+    /// stalled track from its frozen position and advances to the next queued
+    /// track once the frontend has not done so within a short grace period.
     pub fn spawn_guardian(&self, app: AppHandle) {
         let status = self.status.clone();
         let spirc_slot = self.spirc.clone();
@@ -159,9 +159,24 @@ impl PlayerState {
             let mut last_reconnect_at = std::time::Instant::now() - Duration::from_secs(30);
             let mut last_advance_sequence = 0u64;
             let mut pending_advance: Option<std::time::Instant> = None;
+            let mut stall_restarts: Vec<std::time::Instant> = Vec::new();
+            let mut last_position_ms: Option<u32> = None;
+            let mut last_track_sequence = 0u64;
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 let snapshot = status.read().await.clone();
+
+                // A different track means the previous stall (if any) was
+                // recovered successfully; restart the escalation counter.
+                if snapshot.track_sequence != last_track_sequence {
+                    last_track_sequence = snapshot.track_sequence;
+                    stall_restarts.clear();
+                }
+                let position_progressing = snapshot.position_ms != last_position_ms;
+                if position_progressing {
+                    last_position_ms = snapshot.position_ms;
+                    stall_restarts.clear();
+                }
 
                 // 1) A dead session should be rebuilt automatically when we
                 // were mid-playback. Use cached credentials; no browser needed.
@@ -178,10 +193,23 @@ impl PlayerState {
                     && reconnect_due
                     && matches!(
                         snapshot.state.as_str(),
-                        "playing" | "paused" | "loading" | "ended"
+                        "playing" | "paused" | "loading" | "ended" | "error"
                     )
                 {
                     last_reconnect_at = std::time::Instant::now();
+                    // Only seek back into the position we remembered when it
+                    // belongs to the very track we are resuming.
+                    let restarting_uri = last_uri
+                        .lock()
+                        .ok()
+                        .and_then(|slot| slot.clone())
+                        .filter(|uri| uri != "spotify:current");
+                    let resume_from = match (&restarting_uri, snapshot.track_uri.as_deref()) {
+                        (Some(restarting), Some(current)) if restarting == current => {
+                            snapshot.position_ms
+                        }
+                        _ => None,
+                    };
                     tauri::async_runtime::spawn(recover_session(
                         app.clone(),
                         status.clone(),
@@ -189,6 +217,7 @@ impl PlayerState {
                         session_slot.clone(),
                         mixer_slot.clone(),
                         last_uri.clone(),
+                        resume_from,
                     ));
                     continue;
                 }
@@ -223,15 +252,38 @@ impl PlayerState {
                 }
 
                 // 3. Stall recovery: the stream froze at a fixed position
-                // while reported as playing. Restart the current track once.
+                // while reported as playing. Resume the current track from
+                // the frozen position instead of restarting it from zero.
                 position_tracker = position_tracker.observe(&snapshot);
                 if position_tracker.stalled {
                     position_tracker = PositionTracker::new();
-                    if let Some(uri) = last_uri.lock().ok().and_then(|slot| slot.clone()) {
-                        if uri != "spotify:current" {
-                            let _ = restart_track(spirc_slot.clone(), uri);
-                        }
+                    let stalled_uri = last_uri.lock().ok().and_then(|slot| slot.clone());
+                    let Some(uri) = stalled_uri else {
+                        continue;
+                    };
+                    if uri == "spotify:current" {
+                        continue;
                     }
+                    stall_restarts.retain(|at| at.elapsed() < Duration::from_secs(90));
+                    if stall_restarts.len() >= 2 && reconnect_due {
+                        // Repeated stalls without any real progress mean the
+                        // session itself is wedged (every command silently
+                        // no-ops). Rebuild it instead of restarting again.
+                        last_reconnect_at = std::time::Instant::now();
+                        stall_restarts.clear();
+                        tauri::async_runtime::spawn(recover_session(
+                            app.clone(),
+                            status.clone(),
+                            spirc_slot.clone(),
+                            session_slot.clone(),
+                            mixer_slot.clone(),
+                            last_uri.clone(),
+                            snapshot.position_ms,
+                        ));
+                        continue;
+                    }
+                    stall_restarts.push(std::time::Instant::now());
+                    let _ = restart_track(spirc_slot.clone(), uri, snapshot.position_ms.unwrap_or(0));
                 }
             }
         });
@@ -274,14 +326,17 @@ impl PositionTracker {
     }
 }
 
-/// Restarts the track `uri` from the beginning. Used when the stream froze
-/// mid-track while nominally "playing".
+/// Resumes the track `uri` at `position_ms`. Used when the stream froze
+/// mid-track while nominally "playing"; restarting from zero would replay
+/// already-heard audio on every recovery.
 fn restart_track(
     spirc_slot: Arc<Mutex<Option<Spirc>>>,
     uri: String,
+    position_ms: u32,
 ) -> Result<(), String> {
     let options = LoadRequestOptions {
         start_playing: true,
+        seek_to: position_ms,
         ..LoadRequestOptions::default()
     };
     with_loaded_spirc(spirc_slot, |spirc| {
@@ -348,6 +403,7 @@ async fn recover_session(
     session_slot: Arc<Mutex<Option<Session>>>,
     mixer_slot: Arc<Mutex<Option<Arc<dyn mixer::Mixer>>>>,
     last_uri: Arc<Mutex<Option<String>>>,
+    resume_from: Option<u32>,
 ) {
     set_connection_status(&status, "connecting", "Spotify oturumu yeniden kuruluyor").await;
     let result = initialise_player(
@@ -364,27 +420,23 @@ async fn recover_session(
     }
     set_connection_status(&status, "ready", "Yeniden bağlandı").await;
 
-    // Resume whatever was playing before the drop.
-    if let Some(uri) = last_uri.lock().ok().and_then(|slot| slot.clone()) {
-        if uri != "spotify:current" {
-            let _ = restart_track(spirc_slot, uri);
-        }
+    // Resume whatever was playing before the drop, seeking back into the
+    // position where it died instead of replaying the track from the start.
+    if let Some(uri) = last_uri
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .filter(|uri| uri != "spotify:current")
+    {
+        let _ = restart_track(spirc_slot, uri, resume_from.unwrap_or(0));
     }
 }
 
 #[tauri::command]
 pub async fn player_status(state: State<'_, PlayerState>) -> Result<PlayerStatus, String> {
-    if state.has_dead_session() {
-        state.clear_player();
-        let mut current = state.status.write().await;
-        current.state = "disconnected".into();
-        current.message = "Spotify bağlantısı koptu — yeniden bağlanmak için ÇAL'a basın".into();
-        current.track_title = None;
-        current.artist = None;
-        current.track_uri = None;
-        current.duration_ms = None;
-        current.position_ms = None;
-    }
+    // Deliberately read-only: the Rust guardian owns session recovery. Wiping
+    // the stale pipeline here would race the guardian's in-flight rebuild and
+    // leave an empty session slot that nothing reconnects.
     Ok(state.status.read().await.clone())
 }
 
