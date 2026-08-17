@@ -764,22 +764,36 @@ function openOnboardingDialog(force = false) {
   return true;
 }
 
-let updateCheckStarted = false;
+// The app lives in the tray for days thanks to background playback, so a
+// launch-only check would never notice a new release. Re-check periodically
+// and whenever the user brings the window back. A GitHub release also gets
+// its per-platform updater manifest assembled over several minutes while the
+// CI matrix finishes; a check during that window legitimately reports "no
+// update", which the next scheduled check then corrects.
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+
+let updateCheckInFlight = false;
+let updateDismissedThisSession = false;
+let lastUpdateCheckAt = 0;
 
 async function checkForAppUpdate() {
-  if (import.meta.env.DEV || updateCheckStarted) return;
+  if (import.meta.env.DEV || updateCheckInFlight || updateDismissedThisSession) return;
+  if (Date.now() - lastUpdateCheckAt < UPDATE_CHECK_INTERVAL_MS) return;
   if (!document.querySelector<HTMLElement>("#onboarding-dialog")!.hidden) {
     window.setTimeout(() => void checkForAppUpdate(), 1000);
     return;
   }
-  updateCheckStarted = true;
+  updateCheckInFlight = true;
+  lastUpdateCheckAt = Date.now();
   try {
     const update = await check();
     if (update) showUpdateDialog(update);
   } catch (error) {
     // Update checks should never interrupt music playback. A missing release
-    // manifest or an offline connection will simply be retried next launch.
+    // manifest or an offline connection will simply be retried later.
     console.warn("Winampfy update check failed", error);
+  } finally {
+    updateCheckInFlight = false;
   }
 }
 
@@ -807,6 +821,7 @@ function showUpdateDialog(update: AppUpdate) {
 
   const dismiss = () => {
     dialog.hidden = true;
+    updateDismissedThisSession = true;
     void update.close();
   };
   closeButton.onclick = dismiss;
@@ -1619,6 +1634,7 @@ void webamp.renderInto(document.querySelector<HTMLElement>("#webamp-container")!
   syncWebampMetadata(latestStatus);
   openOnboardingDialog();
   window.setTimeout(() => void checkForAppUpdate(), 1500);
+  window.setInterval(() => void checkForAppUpdate(), UPDATE_CHECK_INTERVAL_MS);
 
   const injectExploreSkinsMenuItem = () => {
     const menu = document.querySelector("#webamp-context-menu");
