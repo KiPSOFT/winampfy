@@ -1,6 +1,6 @@
 [package]
 name = "winampfy"
-version = "0.1.13"
+version = "0.1.14"
 description = "A personal retro desktop player powered by librespot"
 authors = ["Serkan Kocaman"]
 edition = "2024"

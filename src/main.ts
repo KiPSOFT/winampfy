@@ -108,6 +108,7 @@ class LibrespotMedia {
   private pollTimer: number;
   private pollInFlight = false;
   private lastAdvanceSequence = 0;
+  private pendingReconcile = false;
   private loadGeneration = 0;
   private loadingTrack = false;
   private desiredVolume: number | null = null;
@@ -141,11 +142,16 @@ class LibrespotMedia {
       // same signal so one bad playlist entry cannot stop the whole queue.
       if (latestStatus.advance_sequence !== this.lastAdvanceSequence) {
         this.lastAdvanceSequence = latestStatus.advance_sequence;
-        // While our timers were throttled the Rust guardian may have advanced
+        this.pendingReconcile = true;
+      }
+      if (this.pendingReconcile) {
+        // While our timers were suspended the Rust guardian may have advanced
         // through several tracks on its own. Re-align webamp with what the
         // backend is actually playing before letting it advance blindly.
-        if (!reconcileWebampTrack()) {
-          this.emit("ended");
+        const result = reconcileWebampTrack();
+        if (result !== "retry") {
+          this.pendingReconcile = false;
+          if (result === "self") this.emit("ended");
         }
       }
       this.emit("timeupdate");
@@ -392,33 +398,49 @@ function syncWebampMetadata(status: PlayerStatus) {
   }
 }
 
-// While the webview's JavaScript timers are throttled in the background the
-// Rust guardian may advance through several queued tracks on its own. When
-// the window returns, catch webamp's selection up to whatever the backend is
+// While the webview's JavaScript timers are suspended in the background the
+// Rust guardian advances through the queued tracks on its own. When the
+// window returns, catch webamp's selection up to whatever the backend is
 // actually playing instead of blindly emitting "ended" — that would advance a
-// single track from webamp's stale position and audibly jump back to an
-// already-played track.
-function reconcileWebampTrack(): boolean {
-  if (!webamp) return false;
+// single track from webamp's stale position and audibly jump to the wrong
+// song.
+//
+// Returns "aligned" when webamp now matches the backend, "self" when webamp
+// should advance itself (the normal end-of-track flow) and "retry" when the
+// backend is momentarily between tracks and the decision should be retried
+// on the next poll.
+function reconcileWebampTrack(): "aligned" | "self" | "retry" {
+  if (!webamp) return "self";
   const backendUri = latestStatus.track_uri;
-  if (backendUri == null) return false;
+  if (backendUri == null) return "self";
   const tracks = webamp.getPlaylistTracks();
-  const backendIndex = tracks.findIndex((track) => track.url === backendUri);
-  if (backendIndex === -1) return false;
+  const backendPosition = tracks.findIndex((track) => track.url === backendUri);
+  if (backendPosition === -1) return "self";
   const currentId = webamp.store.getState().playlist.currentTrack;
-  const currentIndex = currentId == null
+  const currentPosition = currentId == null
     ? -1
     : tracks.findIndex((track) => track.id === currentId);
-  if (backendIndex > currentIndex) {
-    // The guardian already loaded a later track; select it. The matching
-    // loadFromUrl call adopts the live stream instead of reloading it.
-    webamp.setCurrentTrack(backendIndex);
-    return true;
+  if (backendPosition > currentPosition) {
+    if (latestStatus.state === "playing" || latestStatus.state === "loading") {
+      // The guardian is ahead of webamp. Select the track the backend is
+      // playing by its id — display positions and ids diverge once tracks
+      // have been removed or reordered, and selecting by position would load
+      // the wrong song. The matching loadFromUrl call adopts the live stream
+      // instead of reloading it.
+      webamp.store.dispatch({
+        type: webamp.getMediaStatus() === "STOPPED" ? "BUFFER_TRACK" : "PLAY_TRACK",
+        id: tracks[backendPosition].id,
+      });
+      return "aligned";
+    }
+    // The backend just finished this track and the guardian is about to load
+    // the next one; deciding now would reload a track that already ended.
+    return "retry";
   }
   // Backend and webamp agree (e.g. the guardian merely restarted the current
   // track after a stall). Only let webamp advance when the backend really
   // finished the track.
-  return backendIndex === currentIndex && latestStatus.state !== "ended";
+  return latestStatus.state === "ended" ? "self" : "aligned";
 }
 
 function loadSavedPlaylist(): PlaylistInputTrack[] {
