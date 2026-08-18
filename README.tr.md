@@ -33,9 +33,11 @@ Winampfy, Webamp'ın Winamp 2.x arayüzünü native Tauri kabuğu ve librespot �
 - Webamp ile gerçek Winamp 2.x pencereleri ve `.wsz` skin desteği
 - Native, çerçevesiz ve sürüklenebilir macOS/Windows/Linux masaüstü penceresi
 - librespot ile doğrudan Spotify ses oynatma
+- Güvenilir arka plan oynatma: Rust tarafındaki bir bekçi, pencere gizliyken sırayı sürdürür, takılan parçayı kaldığı yerden devam ettirir ve kopan oturumları yeniden bağlar
 - Winamp stilindeki pencere içinde Spotify araması
 - Arama sonuçlarından çoklu seçim ve sıralı playlist oynatma
 - Ad/sahip filtresi ve doğrudan playlist URL desteğiyle Spotify playlist tarayıcısı
+- Playlist tarayıcısının en üstünde, her playlist gibi yüklenebilen yerleşik **Liked Songs** girdisi
 - İlk açılışta şarkı ekleme ve playlist yüklemeyi anlatan, About ekranından yeniden açılabilen hızlı başlangıç rehberi
 - Spotify playlist ve Skin Museum tarayıcıları için tam ekran modu
 - [Winamp Skin Museum](https://skins.webamp.org/) üzerindeki 100.000'den fazla klasik skin için sonsuz kaydırmalı uygulama içi tarayıcı
@@ -44,7 +46,7 @@ Winampfy, Webamp'ın Winamp 2.x arayüzünü native Tauri kabuğu ve librespot �
 - Play, pause, önceki, sonraki, seek, ses, shuffle ve repeat kontrolleri
 - Uygulama kapatılıp açıldığında korunan playlist
 - Sistem tepsisine küçültme, tepsiden geri açma ve çıkış
-- GitHub Releases üzerinden imzalı otomatik güncelleme
+- GitHub Releases üzerinden imzalı otomatik güncelleme; uygulama açıkken periyodik olarak yeniden denetlenir
 - 320 kbps oynatma ve yerel ses önbelleği
 
 ## İndirme
@@ -78,7 +80,7 @@ Winampfy ilk açılışta üç adımlı hızlı başlangıç rehberini gösterir
 ### Playlist yükleme
 
 1. Playlist Editor'ın sağ altındaki **LIST OPTS → LOAD LIST** yolunu açın.
-2. Spotify playlistlerinizde arama yapın veya herkese açık playlistler dahil erişebildiğiniz bir Spotify playlist URL'si yapıştırın.
+2. Spotify playlistlerinizde arama yapın veya herkese açık playlistler dahil erişebildiğiniz bir Spotify playlist URL'si yapıştırın. **Liked Songs** listeniz en üstte yer alır ve her playlist gibi yüklenir.
 3. Bir playlist seçin, isterseniz **SHUFFLE BEFORE LOAD** seçeneğini açın ve **LOAD** düğmesine basın. Bu işlem mevcut şarkı sırasını değiştirir.
 4. Pencere başlığındaki kare düğmeyle tam ekran moduna girip çıkabilirsiniz.
 

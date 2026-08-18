@@ -33,9 +33,11 @@ Winampfy combines Webamp's faithful Winamp 2.x interface with a native Tauri she
 - Authentic Winamp 2.x windows and `.wsz` skin support through Webamp
 - Native, frameless and draggable macOS/Windows/Linux desktop window
 - Direct Spotify audio playback powered by librespot
+- Reliable background playback: a Rust watchdog keeps the queue going while the window is hidden, resumes stalled tracks in place and reconnects dropped sessions
 - Spotify search inside a Winamp-styled dialog
 - Multi-select search results and queue playback
 - Spotify playlist browser with name/owner filtering and direct playlist URL support
+- Built-in **Liked Songs** entry at the top of the playlist browser, loadable like any playlist
 - First-run quick-start guide for adding songs and loading playlists, available again from About
 - Full-screen modes for the Spotify playlist and Skin Museum browsers
 - Infinite-scroll browser for 100,000+ classic skins from [Winamp Skin Museum](https://skins.webamp.org/)
@@ -44,7 +46,7 @@ Winampfy combines Webamp's faithful Winamp 2.x interface with a native Tauri she
 - Play, pause, previous, next, seek, volume, shuffle and repeat controls
 - Playlist persistence between launches
 - Minimize-to-tray, tray restore and quit actions
-- Signed automatic updates from GitHub Releases
+- Signed automatic updates from GitHub Releases, re-checked periodically while the app runs
 - 320 kbps playback and a local audio cache
 
 ## Downloads
@@ -78,7 +80,7 @@ Winampfy shows a three-step quick-start guide on first launch. You can open it a
 ### Load a playlist
 
 1. Open **LIST OPTS → LOAD LIST** at the bottom-right of the Playlist Editor.
-2. Search your Spotify playlists, or paste any accessible Spotify playlist URL—including a public playlist link.
+2. Search your Spotify playlists, or paste any accessible Spotify playlist URL—including a public playlist link. Your **Liked Songs** are listed first and load like any playlist.
 3. Select one playlist, optionally enable **SHUFFLE BEFORE LOAD**, and press **LOAD**. Loading replaces the current queue.
 4. Use the square button in the dialog title bar to enter or leave full-screen mode.
 

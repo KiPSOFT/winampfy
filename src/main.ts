@@ -1396,6 +1396,7 @@ function openSpotifyPlaylistDialog(): Promise<PlaylistInputTrack[] | null> {
       resultsElement.replaceChildren();
       const fragment = document.createDocumentFragment();
       playlists.forEach((playlist, index) => {
+        const isLikedSongs = playlist.uri.endsWith(":collection");
         const visibility = playlist.is_collaborative
           ? "COLLABORATIVE"
           : playlist.is_public ? "PUBLIC" : "PRIVATE";
@@ -1408,10 +1409,12 @@ function openSpotifyPlaylistDialog(): Promise<PlaylistInputTrack[] | null> {
             <strong></strong>
             <small></small>
           </span>
-          <time>${playlist.track_count} TRACKS</time>
+          <time>${isLikedSongs ? "LIKED" : `${playlist.track_count} TRACKS`}</time>
         `;
         row.querySelector("strong")!.textContent = playlist.name;
-        row.querySelector("small")!.textContent = `${visibility} — ${playlist.owner || "Spotify"}`;
+        row.querySelector("small")!.textContent = isLikedSongs
+          ? `SAVED — ${playlist.owner || "Spotify"}`
+          : `${visibility} — ${playlist.owner || "Spotify"}`;
         fragment.append(row);
       });
       resultsElement.append(fragment);

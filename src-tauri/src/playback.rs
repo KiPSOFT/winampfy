@@ -19,9 +19,12 @@ use librespot::{
     },
 };
 use protobuf::Message;
+use protobuf_json_mapping as json_mapping;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State, ipc::Channel};
 use tokio::sync::RwLock;
+
+use librespot::protocol::context_page::ContextPage;
 
 const DEVICE_NAME: &str = "Winampfy Desktop";
 const OAUTH_REDIRECT: &str = "http://127.0.0.1:8898/login";
@@ -958,7 +961,87 @@ pub async fn spotify_playlists(
 
     playlists.sort_by_key(|playlist| playlist.name.to_lowercase());
     playlists.truncate(limit);
+
+    // Offer the account's Liked Songs on top of every playlist search. The
+    // collection is not part of the rootlist; it lives behind the special
+    // `spotify:user:<name>:collection` context URI.
+    let liked = liked_songs_summary(&session);
+    if query.is_empty() || liked.name.to_lowercase().contains(&query) {
+        playlists.insert(0, liked);
+        if playlists.len() > limit {
+            playlists.pop();
+        }
+    }
     Ok(playlists)
+}
+
+fn is_collection_uri(uri: &str) -> bool {
+    uri.starts_with("spotify:user:") && uri.ends_with(":collection")
+}
+
+fn liked_songs_summary(session: &Session) -> SpotifyPlaylistSummary {
+    let username = session.username();
+    SpotifyPlaylistSummary {
+        uri: format!("spotify:user:{username}:collection"),
+        name: "Liked Songs".into(),
+        owner: username,
+        track_count: 0,
+        is_public: false,
+        is_collaborative: false,
+    }
+}
+
+/// Enumerates every track in the Liked Songs collection. The context only
+/// ships the first pages; the rest arrive by following `next_page_url`.
+async fn collection_track_uris(session: &Session, uri: &str) -> Result<Vec<SpotifyUri>, String> {
+    let spclient = session.spclient();
+    let context = spclient
+        .get_context(uri)
+        .await
+        .map_err(|error| format!("Liked Songs alınamadı: {error}"))?;
+
+    let mut uris = Vec::new();
+    let mut next_page_url = None;
+    for page in &context.pages {
+        push_page_tracks(page, &mut uris);
+        if let Some(next) = page.next_page_url.as_deref().filter(|url| !url.is_empty()) {
+            next_page_url = Some(next.to_string());
+        }
+    }
+
+    // Defensive cap: a realistic collection paginates far below this.
+    for _ in 0..500 {
+        let Some(url) = next_page_url.take() else {
+            break;
+        };
+        let page_bytes = spclient
+            .get_next_page(&url)
+            .await
+            .map_err(|error| format!("Liked Songs sayfası alınamadı: {error}"))?;
+        let page_json = String::from_utf8(page_bytes.to_vec())
+            .map_err(|error| format!("Liked Songs sayfası okunamadı: {error}"))?;
+        let page: ContextPage = json_mapping::parse_from_str(&page_json)
+            .map_err(|error| format!("Liked Songs sayfası çözümlenemedi: {error}"))?;
+        if let Some(next) = page.next_page_url.as_deref().filter(|url| !url.is_empty()) {
+            next_page_url = Some(next.to_string());
+        }
+        push_page_tracks(&page, &mut uris);
+    }
+
+    Ok(uris)
+}
+
+fn push_page_tracks(page: &ContextPage, uris: &mut Vec<SpotifyUri>) {
+    for track in &page.tracks {
+        if let Some(uri) = track
+            .uri
+            .as_deref()
+            .filter(|uri| uri.starts_with("spotify:track:"))
+            && let Ok(parsed) = SpotifyUri::from_uri(uri)
+        {
+            uris.push(parsed);
+        }
+    }
 }
 
 #[tauri::command]
@@ -968,20 +1051,24 @@ pub async fn spotify_playlist_tracks(
     state: State<'_, PlayerState>,
 ) -> Result<Vec<SpotifySearchTrack>, String> {
     let session = connected_session(&state)?;
-    let uri = SpotifyUri::from_uri(&normalise_spotify_uri(&uri)?)
-        .map_err(|error| format!("Playlist URI'si okunamadı: {error}"))?;
-    if !matches!(uri, SpotifyUri::Playlist { .. }) {
-        return Err("Bir Spotify playlist bağlantısı seçin".into());
-    }
-
-    let playlist = Playlist::get(&session, &uri)
-        .await
-        .map_err(|error| format!("Playlist alınamadı: {error}"))?;
-    let track_uris = playlist
-        .tracks()
-        .filter(|uri| matches!(uri, SpotifyUri::Track { .. }))
-        .cloned()
-        .collect::<Vec<_>>();
+    let uri = normalise_spotify_uri(&uri)?;
+    let track_uris = if is_collection_uri(&uri) {
+        collection_track_uris(&session, &uri).await?
+    } else {
+        let playlist_uri = SpotifyUri::from_uri(&uri)
+            .map_err(|error| format!("Playlist URI'si okunamadı: {error}"))?;
+        if !matches!(playlist_uri, SpotifyUri::Playlist { .. }) {
+            return Err("Bir Spotify playlist bağlantısı seçin".into());
+        }
+        let playlist = Playlist::get(&session, &playlist_uri)
+            .await
+            .map_err(|error| format!("Playlist alınamadı: {error}"))?;
+        playlist
+            .tracks()
+            .filter(|track_uri| matches!(track_uri, SpotifyUri::Track { .. }))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
     let total = track_uris.len() as u32;
     let mut tracks = Vec::with_capacity(track_uris.len());
     let mut skipped = 0u32;
@@ -1109,5 +1196,14 @@ mod tests {
             normalise_spotify_uri("https://open.spotify.com/album/xyz?si=123").unwrap(),
             "spotify:album:xyz"
         );
+    }
+
+    #[test]
+    fn detects_collection_uri() {
+        assert!(super::is_collection_uri("spotify:user:someone:collection"));
+        assert!(!super::is_collection_uri("spotify:playlist:abc"));
+        assert!(!super::is_collection_uri(
+            "spotify:user:someone:collection:artist:xyz"
+        ));
     }
 }
