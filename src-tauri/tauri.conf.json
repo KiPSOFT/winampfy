@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Winampfy",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "identifier": "com.serkankocaman.winampfy",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -11,16 +11,73 @@
   },
   "app": {
     "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "Winampfy",
-        "width": 550,
-        "height": 406,
-        "minWidth": 550,
-        "minHeight": 406,
+        "width": 275,
+        "height": 116,
+        "minWidth": 275,
+        "minHeight": 14,
         "resizable": false,
         "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "center": true
+      },
+      {
+        "label": "equalizer",
+        "title": "Winampfy Equalizer",
+        "url": "index.html?role=equalizer",
+        "width": 275,
+        "height": 116,
+        "minWidth": 275,
+        "minHeight": 14,
+        "resizable": false,
+        "decorations": false,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "playlist",
+        "title": "Winampfy Playlist Editor",
+        "url": "index.html?role=playlist",
+        "width": 275,
+        "height": 232,
+        "minWidth": 275,
+        "minHeight": 116,
+        "resizable": false,
+        "decorations": false,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "milkdrop",
+        "title": "Winampfy Milkdrop",
+        "url": "index.html?role=milkdrop",
+        "width": 550,
+        "height": 406,
+        "minWidth": 275,
+        "minHeight": 116,
+        "resizable": false,
+        "decorations": false,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "dialogs",
+        "title": "Winampfy",
+        "url": "index.html?role=dialogs",
+        "width": 560,
+        "height": 480,
+        "minWidth": 360,
+        "minHeight": 184,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "visible": false,
         "center": true
       }
     ],

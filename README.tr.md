@@ -31,7 +31,9 @@ Winampfy, Webamp'ın Winamp 2.x arayüzünü native Tauri kabuğu ve librespot �
 ## Özellikler
 
 - Webamp ile gerçek Winamp 2.x pencereleri ve `.wsz` skin desteği
-- Native, çerçevesiz ve sürüklenebilir macOS/Windows/Linux masaüstü penceresi
+- Ana oynatıcı, Equalizer, Playlist Editor ve Milkdrop için bağımsız, native ve çerçevesiz pencereler
+- Çalan parçanın sesinden beslenen, ayrı ve yeniden boyutlandırılabilir pencerede yerleşik Milkdrop görselleştirmesi
+- Klasik ilk açılış yerleşimi, eşzamanlı panel sürükleme ve pencere konumu/görünürlüğü ile Playlist Editor boyutunu saklama
 - librespot ile doğrudan Spotify ses oynatma
 - Güvenilir arka plan oynatma: Rust tarafındaki bir bekçi, pencere gizliyken sırayı sürdürür, takılan parçayı kaldığı yerden devam ettirir ve kopan oturumları yeniden bağlar
 - Winamp stilindeki pencere içinde Spotify araması
@@ -43,9 +45,9 @@ Winampfy, Webamp'ın Winamp 2.x arayüzünü native Tauri kabuğu ve librespot �
 - [Winamp Skin Museum](https://skins.webamp.org/) üzerindeki 100.000'den fazla klasik skin için sonsuz kaydırmalı uygulama içi tarayıcı
 - İndirilen skinleri Webamp'in native **Skins** menüsüne ekleme ve sonraki açılışta geri yükleme
 - **LIST OPTS → LOAD LIST** üzerinden mevcut listeyi değiştirme ve yüklemeden önce isteğe bağlı karıştırma
-- Play, pause, önceki, sonraki, seek, ses, shuffle ve repeat kontrolleri
-- Uygulama kapatılıp açıldığında korunan playlist
-- Sistem tepsisine küçültme, tepsiden geri açma ve çıkış
+- Play, pause, önceki, sonraki, seek, ses, shuffle ve repeat kontrolleri; sırayı doğru izleyen sonraki parça davranışı
+- Uygulama kapatılıp açıldığında korunan playlist içeriği ve Playlist Editor boyutları
+- Grup uyumlu sistem tepsisine küçültme ve geri açma: açık bırakılan tüm paneller birlikte öne gelir
 - GitHub Releases üzerinden imzalı otomatik güncelleme; uygulama açıkken periyodik olarak yeniden denetlenir
 - 320 kbps oynatma ve yerel ses önbelleği
 
@@ -63,6 +65,8 @@ Herkese açık derlemeler şu anda Apple notarization veya ticari kod imzalama s
 ## Kullanım
 
 Winampfy ilk açılışta üç adımlı hızlı başlangıç rehberini gösterir. Rehberi daha sonra Winamp şimşek logosuna tıklayıp **HOW TO USE** seçeneğini kullanarak yeniden açabilirsiniz.
+
+Temiz bir ilk açılışta ana oynatıcının altında Equalizer ve Playlist Editor, sağında ise Milkdrop açılır. Panelleri ayrı ayrı taşıyabilirsiniz; ana oynatıcıyı sürüklemek açık panelleri de birlikte taşır. Winampfy her panelin açık/kapalı durumunu ve son konumunu, ayrıca Playlist Editor boyutunu geri yükler. Sistem tepsisi simgesinden geri getirildiğinde açık pencere grubunun tamamı öne gelir.
 
 ### Spotify'a bağlanma
 
@@ -141,8 +145,8 @@ Otomatik güncellemeler için Tauri updater imza anahtarı gerekir. Özel anahta
 
 | Katman | Teknoloji | Sorumluluk |
 | --- | --- | --- |
-| Arayüz | TypeScript + Webamp | Winamp arayüzü, playlist ve kontroller |
-| Masaüstü | Tauri 2 | Native pencere, sistem tepsisi ve IPC |
+| Arayüz | TypeScript + Webamp | Winamp panelleri, playlist, spektrum, Milkdrop ve kontroller |
+| Masaüstü | Tauri 2 | Native çoklu pencere grubu, sistem tepsisi, geometri saklama ve IPC |
 | Oynatma | Rust + librespot | OAuth, arama, Spotify Connect ve ses |
 
 ## Üçüncü taraf yazılımlar ve markalar

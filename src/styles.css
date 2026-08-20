@@ -14,10 +14,18 @@ html, body, #app {
 }
 
 body {
-  min-width: 550px;
-  min-height: 406px;
   background: #171717;
   user-select: none;
+}
+
+/* The main native window briefly grows while Webamp's context menu is open.
+   Only the skinned player and the popup should be visible in that extra area. */
+html[data-window-role="main"],
+html[data-window-role="main"] body,
+html[data-window-role="dialogs"],
+html[data-window-role="dialogs"] body,
+html[data-window-role="dialogs"] #app {
+  background: transparent;
 }
 
 #webamp-container {
@@ -46,6 +54,12 @@ body {
   padding: 14px;
   background: rgb(0 0 0 / 64%);
   user-select: none;
+}
+
+/* Dialogs already live in a dedicated transparent native window, so a
+   full-window dimmer would show up as a black rectangle around the panel. */
+html[data-window-role="dialogs"] .search-dialog {
+  background: transparent;
 }
 
 .search-panel {

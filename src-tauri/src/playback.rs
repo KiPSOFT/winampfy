@@ -12,8 +12,10 @@ use librespot::{
     metadata::audio::UniqueFields,
     metadata::{Metadata, Playlist, Track},
     playback::{
-        audio_backend,
+        audio_backend::{self, Sink, SinkResult},
         config::{AudioFormat, Bitrate, PlayerConfig},
+        convert::Converter,
+        decoder::AudioPacket,
         mixer::{self, MixerConfig},
         player::{Player, PlayerEvent},
     },
@@ -29,6 +31,50 @@ use librespot::protocol::context_page::ContextPage;
 const DEVICE_NAME: &str = "Winampfy Desktop";
 const OAUTH_REDIRECT: &str = "http://127.0.0.1:8898/login";
 const AUDIO_CACHE_LIMIT: u64 = 256 * 1024 * 1024;
+const VISUALIZER_SAMPLE_LIMIT: usize = 2048;
+
+#[derive(Clone, Default, Serialize)]
+pub struct VisualizerFrame {
+    sequence: u64,
+    samples: Vec<f32>,
+}
+
+/// Mirrors a small, mono slice of each decoded PCM packet while forwarding the
+/// original packet to librespot's real audio sink. The browser never plays this
+/// copy; it only gives Webamp's Milkdrop analyser the signal it normally gets
+/// from an HTML audio element.
+struct VisualizerSink {
+    inner: Box<dyn Sink>,
+    frame: Arc<Mutex<VisualizerFrame>>,
+}
+
+impl Sink for VisualizerSink {
+    fn start(&mut self) -> SinkResult<()> {
+        self.inner.start()
+    }
+
+    fn stop(&mut self) -> SinkResult<()> {
+        self.inner.stop()
+    }
+
+    fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
+        if let AudioPacket::Samples(samples) = &packet {
+            let frame_count = samples.len() / 2;
+            let stride = frame_count.div_ceil(VISUALIZER_SAMPLE_LIMIT).max(1);
+            let mono = samples
+                .chunks_exact(2)
+                .step_by(stride)
+                .take(VISUALIZER_SAMPLE_LIMIT)
+                .map(|channels| ((channels[0] + channels[1]) * 0.5) as f32)
+                .collect::<Vec<_>>();
+            if let Ok(mut frame) = self.frame.lock() {
+                frame.sequence = frame.sequence.wrapping_add(1);
+                frame.samples = mono;
+            }
+        }
+        self.inner.write(packet, converter)
+    }
+}
 
 #[derive(Clone, Serialize)]
 pub struct PlayerStatus {
@@ -97,6 +143,7 @@ pub struct PlayerState {
     current_index: Arc<Mutex<Option<usize>>>,
     last_uri: Arc<Mutex<Option<String>>>,
     last_load_at: Arc<Mutex<std::time::Instant>>,
+    visualizer_frame: Arc<Mutex<VisualizerFrame>>,
 }
 
 impl PlayerState {
@@ -110,6 +157,7 @@ impl PlayerState {
             current_index: Arc::new(Mutex::new(None)),
             last_uri: Arc::new(Mutex::new(None)),
             last_load_at: Arc::new(Mutex::new(std::time::Instant::now())),
+            visualizer_frame: Arc::new(Mutex::new(VisualizerFrame::default())),
         }
     }
 
@@ -157,6 +205,7 @@ impl PlayerState {
         let current_index = self.current_index.clone();
         let last_uri = self.last_uri.clone();
         let last_load_at = self.last_load_at.clone();
+        let visualizer_frame = self.visualizer_frame.clone();
         tauri::async_runtime::spawn(async move {
             let mut position_tracker = PositionTracker::new();
             let mut last_reconnect_at = std::time::Instant::now() - Duration::from_secs(30);
@@ -185,11 +234,7 @@ impl PlayerState {
                 // were mid-playback. Use cached credentials; no browser needed.
                 let session_invalid = session_slot
                     .lock()
-                    .map(|guard| {
-                        guard
-                            .as_ref()
-                            .is_some_and(|session| session.is_invalid())
-                    })
+                    .map(|guard| guard.as_ref().is_some_and(|session| session.is_invalid()))
                     .unwrap_or(false);
                 let reconnect_due = last_reconnect_at.elapsed() > Duration::from_secs(10);
                 if session_invalid
@@ -219,6 +264,7 @@ impl PlayerState {
                         spirc_slot.clone(),
                         session_slot.clone(),
                         mixer_slot.clone(),
+                        visualizer_frame.clone(),
                         last_uri.clone(),
                         resume_from,
                     ));
@@ -280,13 +326,15 @@ impl PlayerState {
                             spirc_slot.clone(),
                             session_slot.clone(),
                             mixer_slot.clone(),
+                            visualizer_frame.clone(),
                             last_uri.clone(),
                             snapshot.position_ms,
                         ));
                         continue;
                     }
                     stall_restarts.push(std::time::Instant::now());
-                    let _ = restart_track(spirc_slot.clone(), uri, snapshot.position_ms.unwrap_or(0));
+                    let _ =
+                        restart_track(spirc_slot.clone(), uri, snapshot.position_ms.unwrap_or(0));
                 }
             }
         });
@@ -405,6 +453,7 @@ async fn recover_session(
     spirc_slot: Arc<Mutex<Option<Spirc>>>,
     session_slot: Arc<Mutex<Option<Session>>>,
     mixer_slot: Arc<Mutex<Option<Arc<dyn mixer::Mixer>>>>,
+    visualizer_frame: Arc<Mutex<VisualizerFrame>>,
     last_uri: Arc<Mutex<Option<String>>>,
     resume_from: Option<u32>,
 ) {
@@ -415,6 +464,7 @@ async fn recover_session(
         spirc_slot.clone(),
         session_slot.clone(),
         mixer_slot.clone(),
+        visualizer_frame,
     )
     .await;
     if let Err(error) = result {
@@ -441,6 +491,15 @@ pub async fn player_status(state: State<'_, PlayerState>) -> Result<PlayerStatus
     // the stale pipeline here would race the guardian's in-flight rebuild and
     // leave an empty session slot that nothing reconnects.
     Ok(state.status.read().await.clone())
+}
+
+#[tauri::command]
+pub fn player_visualizer_frame(state: State<'_, PlayerState>) -> Result<VisualizerFrame, String> {
+    state
+        .visualizer_frame
+        .lock()
+        .map(|frame| frame.clone())
+        .map_err(|_| "Visualizer state lock failed".to_string())
 }
 
 #[tauri::command]
@@ -474,6 +533,7 @@ pub async fn spotify_login(
         state.spirc.clone(),
         state.session.clone(),
         state.mixer.clone(),
+        state.visualizer_frame.clone(),
     )
     .await;
     if let Err(error) = result {
@@ -496,6 +556,7 @@ async fn initialise_player(
     spirc_slot: Arc<Mutex<Option<Spirc>>>,
     session_slot: Arc<Mutex<Option<Session>>>,
     mixer_slot: Arc<Mutex<Option<Arc<dyn mixer::Mixer>>>>,
+    visualizer_frame: Arc<Mutex<VisualizerFrame>>,
 ) -> Result<(), String> {
     let session_config = SessionConfig::default();
     let cache_root = app
@@ -551,7 +612,12 @@ async fn initialise_player(
         player_config,
         session.clone(),
         mixer.get_soft_volume(),
-        move || sink_builder(None, AudioFormat::default()),
+        move || {
+            Box::new(VisualizerSink {
+                inner: sink_builder(None, AudioFormat::default()),
+                frame: visualizer_frame,
+            })
+        },
     );
     let player_events = player.get_player_event_channel();
 
@@ -824,10 +890,7 @@ pub fn player_set_queue(uris: Vec<String>, state: State<'_, PlayerState>) -> Res
 }
 
 #[tauri::command]
-pub fn player_set_current(
-    uri: String,
-    state: State<'_, PlayerState>,
-) -> Result<(), String> {
+pub fn player_set_current(uri: String, state: State<'_, PlayerState>) -> Result<(), String> {
     let uri = normalise_spotify_uri(&uri)?;
     let index = state
         .queue

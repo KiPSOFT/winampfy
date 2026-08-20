@@ -31,7 +31,9 @@ Winampfy combines Webamp's faithful Winamp 2.x interface with a native Tauri she
 ## Features
 
 - Authentic Winamp 2.x windows and `.wsz` skin support through Webamp
-- Native, frameless and draggable macOS/Windows/Linux desktop window
+- Independent native, frameless windows for the player, equalizer, Playlist Editor and Milkdrop
+- Built-in Milkdrop visualization in a dedicated, resizable window driven by the playing track's audio
+- Classic first-run layout, synchronized panel dragging, and persistent window positions, visibility and Playlist Editor size
 - Direct Spotify audio playback powered by librespot
 - Reliable background playback: a Rust watchdog keeps the queue going while the window is hidden, resumes stalled tracks in place and reconnects dropped sessions
 - Spotify search inside a Winamp-styled dialog
@@ -43,9 +45,9 @@ Winampfy combines Webamp's faithful Winamp 2.x interface with a native Tauri she
 - Infinite-scroll browser for 100,000+ classic skins from [Winamp Skin Museum](https://skins.webamp.org/)
 - Downloaded skins are added to Webamp's native **Skins** menu and restored between launches
 - Replace the current queue from **LIST OPTS → LOAD LIST**, optionally shuffled before loading
-- Play, pause, previous, next, seek, volume, shuffle and repeat controls
-- Playlist persistence between launches
-- Minimize-to-tray, tray restore and quit actions
+- Play, pause, previous, next, seek, volume, shuffle and repeat controls, with queue-aware next-track behavior
+- Playlist contents and Playlist Editor dimensions persist between launches
+- Group-aware minimize-to-tray and restore: every panel left open returns together
 - Signed automatic updates from GitHub Releases, re-checked periodically while the app runs
 - 320 kbps playback and a local audio cache
 
@@ -63,6 +65,8 @@ The public builds are currently not notarized or signed with a commercial certif
 ## Usage
 
 Winampfy shows a three-step quick-start guide on first launch. You can open it again at any time by clicking the Winamp lightning-bolt logo and choosing **HOW TO USE**.
+
+On a clean first launch, the main player opens above the Equalizer and Playlist Editor, with Milkdrop on the right. You can move panels independently; dragging the main player carries the open panels with it. Winampfy restores each panel's open state and last position, as well as the Playlist Editor's size. Restoring the app from the system tray brings the complete open window group to the front.
 
 ### Connect Spotify
 
@@ -141,8 +145,8 @@ Automatic updates require a Tauri updater signing key. Keep the private key outs
 
 | Layer | Technology | Responsibility |
 | --- | --- | --- |
-| Interface | TypeScript + Webamp | Winamp UI, playlist and controls |
-| Desktop | Tauri 2 | Native window, tray and IPC |
+| Interface | TypeScript + Webamp | Winamp panels, playlist, spectrum, Milkdrop and controls |
+| Desktop | Tauri 2 | Native multi-window group, tray, geometry persistence and IPC |
 | Playback | Rust + librespot | OAuth, search, Spotify Connect and audio |
 
 ## Third-party software and trademarks

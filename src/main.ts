@@ -1,9 +1,16 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, Window as TauriWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
+import { emit, listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import Webamp from "webamp";
+// webamp 2.3.1 ships the Butterchurn runtime as a public export but omits the
+// matching declaration file from its package. The class has Webamp's API.
+// @ts-expect-error Missing upstream webamp/butterchurn declaration artifact.
+import WebampWithButterchurn from "webamp/butterchurn";
 import "./styles.css";
 
 type PlaybackState = "disconnected" | "connecting" | "loading" | "ready" | "playing" | "paused" | "ended" | "error";
@@ -58,6 +65,11 @@ interface PlaylistInputTrack {
   duration: number;
 }
 
+interface VisualizerFrame {
+  sequence: number;
+  samples: number[];
+}
+
 interface SkinMuseumSkin {
   md5: string;
   filename: string;
@@ -91,14 +103,96 @@ const PLAYLIST_STORAGE_KEY = "winampfy.playlist.v1";
 const INSTALLED_SKINS_STORAGE_KEY = "winampfy.skins.v1";
 const ACTIVE_SKIN_STORAGE_KEY = "winampfy.active-skin.v1";
 const ONBOARDING_STORAGE_KEY = "winampfy.onboarding.v1";
+const WINDOWS_STORAGE_KEY = "winampfy.windows.v1";
+const GEOMETRY_STORAGE_KEY = "winampfy.geometry.v1";
+const PLAYLIST_SIZE_STORAGE_KEY = "winampfy.playlist-size.v1";
 const SKIN_MUSEUM_API = "https://skins.webamp.org/graphql";
 const SKIN_PAGE_SIZE = 24;
 const WINAMP_LOGO_URL = new URL("../src-tauri/icons/winamp-logo.png", import.meta.url).href;
+
+// The app is laid out like classic Winamp: the player, the equalizer and the
+// playlist editor are separate OS windows that can be shown, hidden and
+// dragged around individually, plus one utility window that hosts the larger
+// dialogs (search, playlist browser, skin explorer, onboarding, updates).
+type WindowRole = "main" | "equalizer" | "playlist" | "milkdrop" | "dialogs";
+const windowRole: WindowRole = (() => {
+  const role = new URLSearchParams(window.location.search).get("role");
+  return role === "equalizer" || role === "playlist" || role === "milkdrop" || role === "dialogs"
+    ? role
+    : "main";
+})();
+document.documentElement.dataset.windowRole = windowRole;
+const isPanelWindow = windowRole !== "dialogs";
+
+interface WindowsState {
+  equalizer: boolean;
+  playlist: boolean;
+  milkdrop: boolean;
+}
+
+function loadWindowsState(): WindowsState {
+  try {
+    const value = JSON.parse(localStorage.getItem(WINDOWS_STORAGE_KEY) ?? "{}") as Partial<WindowsState>;
+    return {
+      equalizer: typeof value.equalizer === "boolean" ? value.equalizer : true,
+      playlist: typeof value.playlist === "boolean" ? value.playlist : true,
+      milkdrop: typeof value.milkdrop === "boolean" ? value.milkdrop : true,
+    };
+  } catch {
+    return { equalizer: true, playlist: true, milkdrop: true };
+  }
+}
+
+function saveWindowsState(state: WindowsState) {
+  localStorage.setItem(WINDOWS_STORAGE_KEY, JSON.stringify(state));
+  syncNativePanelButtons(state);
+  void invoke("set_panel_visibility_state", {
+    equalizer: state.equalizer,
+    playlist: state.playlist,
+    milkdrop: state.milkdrop,
+  }).catch(() => {});
+  void emit("winampfy:windows-state", state);
+}
+
+function syncNativePanelButtons(state = loadWindowsState()) {
+  document.querySelector("#main-window #equalizer-button")?.classList.toggle("selected", state.equalizer);
+  document.querySelector("#main-window #playlist-button")?.classList.toggle("selected", state.playlist);
+}
+
+const initialWindowsState = loadWindowsState();
+void invoke("set_panel_visibility_state", {
+  equalizer: initialWindowsState.equalizer,
+  playlist: initialWindowsState.playlist,
+  milkdrop: initialWindowsState.milkdrop,
+}).catch(() => {});
+
+function loadPlaylistWindowSize(): [number, number] | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(PLAYLIST_SIZE_STORAGE_KEY) ?? "null") as unknown;
+    return Array.isArray(value)
+      && value.length === 2
+      && value.every((part) => typeof part === "number" && Number.isFinite(part) && part >= 0)
+      ? [Math.round(value[0] as number), Math.round(value[1] as number)]
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const PANEL_SELECTOR: Record<Exclude<WindowRole, "dialogs">, string> = {
+  main: "#main-window",
+  equalizer: "#equalizer-window",
+  playlist: "#playlist-window",
+  milkdrop: ".gen-window",
+};
 
 let latestStatus = disconnectedStatus;
 let webamp: Webamp | null = null;
 let lastMetadataKey = "";
 let activeTrackUrl = "spotify:current";
+// Webamp instantiates the custom media class without arguments, so the
+// leader flag has to be decided before the Webamp instance is created.
+let mediaIsLeader = false;
 
 class LibrespotMedia {
   private listeners = new Map<string, Set<MediaCallback>>();
@@ -115,11 +209,86 @@ class LibrespotMedia {
   private appliedVolume = 72;
   private volumeUpdateInFlight = false;
   private volumeSyncTimer: number | null = null;
+  private visualizerTimer: number | null = null;
+  private visualizerPollInFlight = false;
+  private lastVisualizerSequence = 0;
+  private visualizerFrames: Float32Array[] = [];
+  private visualizerFrameOffset = 0;
+  private visualizerNode: ScriptProcessorNode | null = null;
+  private visualizerMute: GainNode | null = null;
+  // Only the playlist window owns the queue UI; every other window must poll
+  // for display only. Advancing (or reconciling the selection) from more than
+  // one window would race and double-load tracks.
+  private readonly leader = mediaIsLeader;
 
   constructor() {
-    this.analyser.fftSize = 256;
+    this.analyser.fftSize = windowRole === "milkdrop" ? 2048 : 256;
+    if (windowRole === "main" || windowRole === "milkdrop") this.startVisualizerBridge();
     this.pollTimer = window.setInterval(() => this.poll(), 300);
     void this.poll();
+  }
+
+  private startVisualizerBridge() {
+    // librespot owns the audible output. A muted ScriptProcessor graph feeds a
+    // downsampled PCM copy into Webamp's classic spectrum analyser and Milkdrop.
+    const processor = this.context.createScriptProcessor(2048, 0, 2);
+    const mute = this.context.createGain();
+    mute.gain.value = 0;
+    processor.onaudioprocess = (event) => {
+      const output = event.outputBuffer.getChannelData(0);
+      output.fill(0);
+      if (latestStatus.state === "playing" || latestStatus.state === "loading") {
+        let outputOffset = 0;
+        while (outputOffset < output.length && this.visualizerFrames.length > 0) {
+          const frame = this.visualizerFrames[0];
+          const available = frame.length - this.visualizerFrameOffset;
+          const count = Math.min(output.length - outputOffset, available);
+          output.set(frame.subarray(this.visualizerFrameOffset, this.visualizerFrameOffset + count), outputOffset);
+          outputOffset += count;
+          this.visualizerFrameOffset += count;
+          if (this.visualizerFrameOffset >= frame.length) {
+            this.visualizerFrames.shift();
+            this.visualizerFrameOffset = 0;
+          }
+        }
+      }
+      for (let channel = 1; channel < event.outputBuffer.numberOfChannels; channel += 1) {
+        event.outputBuffer.getChannelData(channel).set(output);
+      }
+    };
+    processor.connect(this.analyser);
+    this.analyser.connect(mute);
+    mute.connect(this.context.destination);
+    this.visualizerNode = processor;
+    this.visualizerMute = mute;
+    this.visualizerTimer = window.setInterval(() => void this.pollVisualizerFrame(), 25);
+    window.addEventListener("focus", this.resumeAudioContext);
+    document.addEventListener("pointerdown", this.resumeAudioContext, { capture: true });
+    void this.context.resume();
+  }
+
+  private resumeAudioContext = () => {
+    if (this.context.state === "suspended") void this.context.resume();
+  };
+
+  private async pollVisualizerFrame() {
+    if (this.visualizerPollInFlight) return;
+    this.visualizerPollInFlight = true;
+    try {
+      const frame = await invoke<VisualizerFrame>("player_visualizer_frame");
+      if (frame.sequence === this.lastVisualizerSequence || frame.samples.length === 0) return;
+      this.lastVisualizerSequence = frame.sequence;
+      this.visualizerFrames.push(Float32Array.from(frame.samples));
+      // A temporarily throttled window should resume from live audio, not
+      // churn through seconds of stale visualization frames.
+      if (this.visualizerFrames.length > 4) {
+        this.visualizerFrames.splice(0, this.visualizerFrames.length - 4);
+        this.visualizerFrameOffset = 0;
+      }
+    } catch {
+    } finally {
+      this.visualizerPollInFlight = false;
+    }
   }
 
   private emit(event: string, ...args: unknown[]) {
@@ -140,11 +309,11 @@ class LibrespotMedia {
       // The monotonic sequence makes the advance durable even if that
       // transient `ended` state is never observed. Unavailable tracks use the
       // same signal so one bad playlist entry cannot stop the whole queue.
-      if (latestStatus.advance_sequence !== this.lastAdvanceSequence) {
+      if (this.leader && latestStatus.advance_sequence !== this.lastAdvanceSequence) {
         this.lastAdvanceSequence = latestStatus.advance_sequence;
         this.pendingReconcile = true;
       }
-      if (this.pendingReconcile) {
+      if (this.leader && this.pendingReconcile) {
         // While our timers were suspended the Rust guardian may have advanced
         // through several tracks on its own. Re-align webamp with what the
         // backend is actually playing before letting it advance blindly.
@@ -153,6 +322,17 @@ class LibrespotMedia {
           this.pendingReconcile = false;
           if (result === "self") this.emit("ended");
         }
+      } else if (
+        this.leader
+        && !this.loadingTrack
+        && (latestStatus.state === "playing"
+          || latestStatus.state === "loading"
+          || latestStatus.state === "paused")
+      ) {
+        // Manual transport commands are issued by the separate player
+        // window, so they do not increment Webamp's end-of-track sequence.
+        // Still move Playlist Editor's current row to the backend track.
+        reconcileWebampTrack();
       }
       this.emit("timeupdate");
       syncWebampMetadata(latestStatus);
@@ -363,6 +543,11 @@ class LibrespotMedia {
   dispose() {
     window.clearInterval(this.pollTimer);
     if (this.volumeSyncTimer != null) window.clearTimeout(this.volumeSyncTimer);
+    if (this.visualizerTimer != null) window.clearInterval(this.visualizerTimer);
+    window.removeEventListener("focus", this.resumeAudioContext);
+    document.removeEventListener("pointerdown", this.resumeAudioContext, { capture: true });
+    this.visualizerNode?.disconnect();
+    this.visualizerMute?.disconnect();
     this.listeners.clear();
     void this.context.close();
   }
@@ -373,6 +558,15 @@ function syncWebampMetadata(status: PlayerStatus) {
   const playlistTracks = webamp.getPlaylistTracks();
   const currentTrack = playlistTracks.find((track) => track.url === activeTrackUrl);
   if (!currentTrack) return;
+  if (
+    windowRole === "playlist"
+    && (status.track_uri == null
+      || normaliseSpotifyIdentity(currentTrack.url) !== normaliseSpotifyIdentity(status.track_uri))
+  ) {
+    // A transport change can reach this webview one poll before Webamp moves
+    // its selection. Never overwrite the old row with the new song's tags.
+    return;
+  }
 
   const title = status.track_title ?? status.message;
   const artist = status.artist ?? (status.state === "ready" ? "Spotify connected" : "Spotify Premium");
@@ -414,21 +608,22 @@ function reconcileWebampTrack(): "aligned" | "self" | "retry" {
   const backendUri = latestStatus.track_uri;
   if (backendUri == null) return "self";
   const tracks = webamp.getPlaylistTracks();
-  const backendPosition = tracks.findIndex((track) => track.url === backendUri);
+  const backendIdentity = normaliseSpotifyIdentity(backendUri);
+  const backendPosition = tracks.findIndex(
+    (track) => normaliseSpotifyIdentity(track.url) === backendIdentity,
+  );
   if (backendPosition === -1) return "self";
   const currentId = webamp.store.getState().playlist.currentTrack;
   const currentPosition = currentId == null
     ? -1
     : tracks.findIndex((track) => track.id === currentId);
-  if (backendPosition > currentPosition) {
-    if (latestStatus.state === "playing" || latestStatus.state === "loading") {
-      // The guardian is ahead of webamp. Select the track the backend is
-      // playing by its id — display positions and ids diverge once tracks
-      // have been removed or reordered, and selecting by position would load
-      // the wrong song. The matching loadFromUrl call adopts the live stream
-      // instead of reloading it.
+  if (backendPosition !== currentPosition) {
+    if (latestStatus.state === "playing" || latestStatus.state === "loading" || latestStatus.state === "paused") {
+      // Select the track the backend is on by id — display positions and ids
+      // diverge once tracks have been removed or reordered. The matching
+      // loadFromUrl call adopts the live stream instead of restarting it.
       webamp.store.dispatch({
-        type: webamp.getMediaStatus() === "STOPPED" ? "BUFFER_TRACK" : "PLAY_TRACK",
+        type: latestStatus.state === "paused" ? "BUFFER_TRACK" : "PLAY_TRACK",
         id: tracks[backendPosition].id,
       });
       return "aligned";
@@ -441,6 +636,68 @@ function reconcileWebampTrack(): "aligned" | "self" | "retry" {
   // track after a stall). Only let webamp advance when the backend really
   // finished the track.
   return latestStatus.state === "ended" ? "self" : "aligned";
+}
+
+// The main window's Webamp instance only has a metadata placeholder. Resolve
+// transport actions from the persisted real playlist and load the target in
+// librespot directly, so Next does not depend on a hidden playlist webview
+// receiving and processing a cross-window event.
+async function advanceTransport(command: "next" | "previous", count: number) {
+  const tracks = loadSavedPlaylist();
+  if (tracks.length === 0) return;
+
+  const step = command === "next" ? count : -count;
+  const state = webamp?.store.getState();
+  const currentUri = latestStatus.track_uri == null
+    ? null
+    : normaliseSpotifyIdentity(latestStatus.track_uri);
+  const currentIndex = currentUri == null
+    ? -1
+    : tracks.findIndex((track) => normaliseSpotifyIdentity(track.url) === currentUri);
+  let targetIndex: number;
+  if (state?.media.shuffle) {
+    targetIndex = Math.floor(Math.random() * tracks.length);
+    while (targetIndex === currentIndex && tracks.length > 1) {
+      targetIndex = Math.floor(Math.random() * tracks.length);
+    }
+  } else if (state?.media.repeat) {
+    targetIndex = (((currentIndex + step) % tracks.length) + tracks.length) % tracks.length;
+  } else {
+    const origin = currentIndex < 0 ? (step > 0 ? -1 : tracks.length) : currentIndex;
+    if ((origin === tracks.length - 1 && step > 0) || (origin === 0 && step < 0)) return;
+    targetIndex = Math.max(0, Math.min(tracks.length - 1, origin + step));
+  }
+
+  const target = tracks[targetIndex];
+  const autoPlay = latestStatus.state === "playing" || latestStatus.state === "loading";
+  const previousStatus = latestStatus;
+  latestStatus = {
+    ...latestStatus,
+    state: autoPlay ? "loading" : "paused",
+    message: "Parça yükleniyor",
+    track_uri: target.url,
+    track_title: target.metaData?.title ?? target.defaultName,
+    artist: target.metaData?.artist ?? null,
+    duration_ms: Math.round(target.duration * 1000),
+    position_ms: 0,
+  };
+  try {
+    await invoke("player_set_queue", { uris: tracks.map((track) => track.url) });
+    await invoke("player_set_current", { uri: target.url });
+    await invoke("player_load_uri", { uri: target.url, autoPlay });
+  } catch (error) {
+    latestStatus = previousStatus;
+    if (previousStatus.track_uri) {
+      void invoke("player_set_current", { uri: previousStatus.track_uri }).catch(() => {});
+    }
+    console.warn("Winampfy could not advance the playlist", error);
+  }
+}
+
+function normaliseSpotifyIdentity(value: string) {
+  const input = value.trim();
+  const match = input.match(/^https?:\/\/open\.spotify\.com\/([^/?#]+)\/([^/?#]+)/i);
+  return match ? `spotify:${match[1]}:${match[2]}` : input;
 }
 
 function loadSavedPlaylist(): PlaylistInputTrack[] {
@@ -732,6 +989,7 @@ function openOnboardingDialog(force = false) {
     backButton.onclick = null;
     nextButton.onclick = null;
     dialog.onkeydown = null;
+    hideDialogsWindow();
   };
 
   dialog.hidden = false;
@@ -771,6 +1029,11 @@ function openOnboardingDialog(force = false) {
 // CI matrix finishes; a check during that window legitimately reports "no
 // update", which the next scheduled check then corrects.
 const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+
+// Closing any dialog hides the shared dialogs window until it is needed again.
+function hideDialogsWindow() {
+  if (windowRole === "dialogs") void getCurrentWindow().hide();
+}
 
 let updateCheckInFlight = false;
 let updateDismissedThisSession = false;
@@ -818,11 +1081,13 @@ function showUpdateDialog(update: AppUpdate) {
   status.textContent = "Güncelleme güvenli bir imzayla doğrulanacaktır.";
   status.dataset.state = "idle";
   dialog.hidden = false;
+  if (windowRole === "dialogs") void getCurrentWindow().show();
 
   const dismiss = () => {
     dialog.hidden = true;
     updateDismissedThisSession = true;
     void update.close();
+    hideDialogsWindow();
   };
   closeButton.onclick = dismiss;
   laterButton.onclick = dismiss;
@@ -884,6 +1149,7 @@ async function openAboutDialog() {
     helpButton.onclick = null;
     okButton.onclick = null;
     dialog.onkeydown = null;
+    hideDialogsWindow();
   };
   closeButton.onclick = close;
   okButton.onclick = close;
@@ -964,14 +1230,17 @@ async function fetchSkinMuseumPage(query: string, offset: number) {
 }
 
 async function downloadAndApplySkin(skin: SkinMuseumSkin) {
-  if (!webamp) throw new Error("Webamp is not ready");
   const response = await fetch(skin.download_url);
   if (!response.ok) throw new Error(`Skin download HTTP ${response.status}`);
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);
   try {
-    webamp.setSkinFromUrl(objectUrl);
-    await webamp.skinIsLoaded();
+    // The dialogs window has no Webamp instance; there the skin is only
+    // recorded and every panel window reloads with it.
+    if (webamp) {
+      webamp.setSkinFromUrl(objectUrl);
+      await webamp.skinIsLoaded();
+    }
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
@@ -986,6 +1255,7 @@ async function downloadAndApplySkin(skin: SkinMuseumSkin) {
   localStorage.setItem(INSTALLED_SKINS_STORAGE_KEY, JSON.stringify(installedSkins));
   localStorage.setItem(ACTIVE_SKIN_STORAGE_KEY, installed.url);
   syncInstalledSkinMenu();
+  await emit("winampfy:skin-changed", { source: windowRole });
 }
 
 function openSkinExplorerDialog() {
@@ -1023,6 +1293,7 @@ function openSkinExplorerDialog() {
     resultsElement.ondblclick = null;
     resultsElement.onscroll = null;
     dialog.onkeydown = null;
+    hideDialogsWindow();
   };
 
   const appendResults = (skins: SkinMuseumSkin[], startIndex: number) => {
@@ -1171,27 +1442,68 @@ function openSkinExplorerDialog() {
   void loadMore(true);
 }
 
-webamp = new Webamp({
-  __customMediaClass: LibrespotMedia,
-  initialSkin: initialSkinUrl ? { url: initialSkinUrl } : undefined,
-  availableSkins: skinMenuEntries(),
-  initialTracks: savedPlaylist.length > 0 ? savedPlaylist : [connectionPlaceholder],
-  windowLayout: {
-    main: { position: { left: 0, top: 0 } },
-    equalizer: { position: { left: 275, top: 0 } },
+// Each window renders exactly one Webamp panel; the other two are omitted so
+// they start closed inside that instance. The real equalizer and playlist
+// live in their own native windows.
+const savedPlaylistGeometry = loadGeometries().playlist;
+const savedPlaylistWindowSize = loadPlaylistWindowSize();
+const playlistExtraWidth = savedPlaylistWindowSize?.[0]
+  ?? (savedPlaylistGeometry ? Math.max(0, Math.round((savedPlaylistGeometry.w - 275) / 25)) : 11);
+const playlistExtraHeight = savedPlaylistWindowSize?.[1]
+  ?? (savedPlaylistGeometry ? Math.max(0, Math.round((savedPlaylistGeometry.h - 116) / 29)) : 6);
+const panelWindowLayouts = {
+  main: { main: { position: { left: 0, top: 0 } } },
+  equalizer: { equalizer: { position: { left: 0, top: 0 } } },
+  playlist: {
     playlist: {
-      position: { left: 0, top: 116 },
-      size: { extraWidth: 11, extraHeight: 6 },
+      position: { left: 0, top: 0 },
+      size: { extraWidth: playlistExtraWidth, extraHeight: playlistExtraHeight },
     },
   },
-  enableHotkeys: true,
-  enableMediaSession: false,
-  handleAddUrlEvent: openSpotifySearchDialog,
-  handleTrackDropEvent: (event) => {
-    const text = event.dataTransfer.getData("text/plain").trim();
-    return text ? [{ url: text, defaultName: text, duration: 0 }] : null;
+  milkdrop: {
+    milkdrop: {
+      position: { left: 0, top: 0 },
+      size: { extraWidth: 11, extraHeight: 10 },
+    },
   },
+} as const;
+
+mediaIsLeader = windowRole === "playlist";
+
+const WebampClass: typeof Webamp = windowRole === "milkdrop"
+  ? WebampWithButterchurn as typeof Webamp
+  : Webamp;
+webamp = new WebampClass({
+  __customMediaClass: LibrespotMedia,
+  initialSkin: initialSkinUrl ? { url: initialSkinUrl } : undefined,
+  availableSkins: windowRole === "main" ? skinMenuEntries() : undefined,
+  initialTracks: windowRole === "playlist"
+    ? (savedPlaylist.length > 0 ? savedPlaylist : [connectionPlaceholder])
+    : windowRole === "main" || windowRole === "milkdrop"
+      ? [connectionPlaceholder]
+      : [],
+  windowLayout: windowRole === "equalizer"
+    ? panelWindowLayouts.equalizer
+    : windowRole === "playlist"
+      ? panelWindowLayouts.playlist
+      : windowRole === "milkdrop"
+        ? panelWindowLayouts.milkdrop
+        : panelWindowLayouts.main,
+  enableHotkeys: windowRole === "main",
+  enableMediaSession: false,
+  handleTrackDropEvent: windowRole === "playlist"
+    ? (event) => {
+        const text = event.dataTransfer.getData("text/plain").trim();
+        return text ? [{ url: text, defaultName: text, duration: 0 }] : null;
+      }
+    : undefined,
 });
+
+if (windowRole === "playlist") {
+  void invoke("player_set_queue", {
+    uris: savedPlaylist.map((track) => track.url),
+  }).catch(() => {});
+}
 
 function toPlaylistTrack(track: SpotifySearchTrack): PlaylistInputTrack {
   return {
@@ -1238,6 +1550,7 @@ function openSpotifySearchDialog(): Promise<PlaylistInputTrack[] | null> {
       closeButton.onclick = null;
       addButton.onclick = null;
       dialog.onkeydown = null;
+      hideDialogsWindow();
       resolve(tracks);
     };
 
@@ -1256,7 +1569,6 @@ function openSpotifySearchDialog(): Promise<PlaylistInputTrack[] | null> {
       }
 
       if (query.startsWith("spotify:") || /^https?:\/\/open\.spotify\.com\//.test(query)) {
-        removeConnectionPlaceholder();
         finish([{ url: query, defaultName: query, duration: 0 }]);
         return;
       }
@@ -1324,7 +1636,6 @@ function openSpotifySearchDialog(): Promise<PlaylistInputTrack[] | null> {
         'input[type="checkbox"]:checked',
       )].map((checkbox) => results[Number(checkbox.value)]).filter(Boolean);
       if (selected.length === 0) return;
-      removeConnectionPlaceholder();
       finish(selected.map(toPlaylistTrack));
     };
   });
@@ -1382,6 +1693,7 @@ function openSpotifyPlaylistDialog(): Promise<PlaylistInputTrack[] | null> {
       resultsElement.onchange = null;
       resultsElement.ondblclick = null;
       dialog.onkeydown = null;
+      hideDialogsWindow();
       resolve(tracks);
     };
 
@@ -1550,18 +1862,250 @@ function removeConnectionPlaceholder() {
   }
 }
 
+// --- Multi-window management -------------------------------------------------
+//
+// The Winamp panels and Milkdrop are separate native windows. They remember whether
+// they are open and where they were placed; dragging the player carries the
+// other open panels along, and all large dialogs live in a fourth utility
+// window.
+
+type PanelRole = "main" | "equalizer" | "playlist" | "milkdrop";
+type AuxiliaryPanelRole = Exclude<PanelRole, "main">;
+
+type NativeWindow = TauriWindow | WebviewWindow;
+
+async function nativePanelWindow(role: PanelRole): Promise<NativeWindow | null> {
+  if (role === windowRole) return getCurrentWindow();
+  return WebviewWindow.getByLabel(role);
+}
+
+function showPanelWindow(role: AuxiliaryPanelRole) {
+  saveWindowsState({ ...loadWindowsState(), [role]: true });
+  void nativePanelWindow(role).then(async (win) => {
+    if (!win) return;
+    await win.show();
+    await win.setFocus();
+  });
+}
+
+function hidePanelWindow(role: AuxiliaryPanelRole) {
+  saveWindowsState({ ...loadWindowsState(), [role]: false });
+  void nativePanelWindow(role).then((win) => win?.hide());
+  if (role === windowRole) void getCurrentWindow().hide();
+}
+
+function togglePanelWindow(role: AuxiliaryPanelRole) {
+  // The saved preference can intentionally differ from native visibility
+  // while the whole group is minimized or during startup restoration. Always
+  // toggle what is actually on screen so one click reliably opens the panel.
+  void nativePanelWindow(role).then(async (win) => {
+    if (!win) return;
+    if (await win.isVisible()) {
+      hidePanelWindow(role);
+    } else {
+      showPanelWindow(role);
+    }
+  });
+}
+
+async function openDialogWindow(kind: "search" | "playlists" | "skins" | "about") {
+  if (windowRole === "dialogs") {
+    void emit("winampfy:open-dialog", { kind });
+    return;
+  }
+  const dialogs = await WebviewWindow.getByLabel("dialogs");
+  await dialogs?.show();
+  await dialogs?.setFocus();
+  await emit("winampfy:open-dialog", { kind });
+}
+
+interface PanelGeometry {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const geometries = new Map<PanelRole, PanelGeometry>();
+let geometryPersistTimer: number | null = null;
+
+function loadGeometries(): Partial<Record<PanelRole, PanelGeometry>> {
+  try {
+    return JSON.parse(localStorage.getItem(GEOMETRY_STORAGE_KEY) ?? "{}") as Partial<
+      Record<PanelRole, PanelGeometry>
+    >;
+  } catch {
+    return {};
+  }
+}
+
+function persistGeometries() {
+  localStorage.setItem(GEOMETRY_STORAGE_KEY, JSON.stringify({
+    ...loadGeometries(),
+    ...Object.fromEntries(geometries),
+  }));
+}
+
+function persistGeometriesSoon() {
+  if (geometryPersistTimer != null) window.clearTimeout(geometryPersistTimer);
+  geometryPersistTimer = window.setTimeout(() => {
+    geometryPersistTimer = null;
+    persistGeometries();
+  }, 600);
+}
+
+window.addEventListener("beforeunload", persistGeometries);
+
+function trackOwnGeometry() {
+  if (!isPanelWindow) return;
+  const panel = document.querySelector<HTMLElement>(
+    PANEL_SELECTOR[windowRole as Exclude<WindowRole, "dialogs">],
+  );
+  if (!panel) return;
+
+  const appWindow = getCurrentWindow();
+  const readGeometry = async (): Promise<PanelGeometry | null> => {
+    try {
+      const [scale, position] = await Promise.all([appWindow.scaleFactor(), appWindow.outerPosition()]);
+      const rect = panel.getBoundingClientRect();
+      return { x: position.x / scale, y: position.y / scale, w: rect.width, h: rect.height };
+    } catch {
+      return null;
+    }
+  };
+
+  const publish = (geo: PanelGeometry, broadcast: boolean) => {
+    geometries.set(windowRole as PanelRole, geo);
+    if (broadcast) void emit("winampfy:geometry", { role: windowRole, ...geo });
+    persistGeometriesSoon();
+  };
+
+  void readGeometry().then((geo) => {
+    if (geo) publish(geo, true);
+  });
+
+  // Shade mode, the playlist resize grip and skin changes all resize the
+  // panel; the native window must follow or the panel gets clipped.
+  new ResizeObserver(() => {
+    void readGeometry().then((geo) => {
+      if (!geo) return;
+      void appWindow.setSize(new LogicalSize(geo.w, geo.h));
+      publish(geo, true);
+    });
+  }).observe(panel);
+
+  // Every panel publishes its own position; the Rust side carries the open
+  // sibling panels whenever the player window moves, and moving an equalizer
+  // or playlist window never drags the others along.
+  void appWindow.onMoved(async ({ payload }) => {
+    const scale = await appWindow.scaleFactor();
+    const size = geometries.get(windowRole as PanelRole);
+    publish({
+      x: payload.x / scale,
+      y: payload.y / scale,
+      w: size?.w ?? panel.getBoundingClientRect().width,
+      h: size?.h ?? panel.getBoundingClientRect().height,
+    }, true);
+  });
+}
+
+void listen<{ role: PanelRole } & PanelGeometry>("winampfy:geometry", (event) => {
+  const { role, x, y, w, h } = event.payload;
+  if (role === windowRole) return;
+  geometries.set(role, { x, y, w, h });
+  persistGeometriesSoon();
+});
+
+// Place the equalizer and playlist windows at their remembered spot, or in
+// the classic stacked layout right below the player on first run.
+async function restorePanelWindows() {
+  if (windowRole !== "main") return;
+  const appWindow = getCurrentWindow();
+  const saved = loadGeometries();
+  try {
+    const scale = await appWindow.scaleFactor();
+    let own: { x: number; y: number };
+    if (saved.main) {
+      own = { x: saved.main.x, y: saved.main.y };
+      await appWindow.setPosition(new LogicalPosition(own.x, own.y));
+    } else {
+      const position = await appWindow.outerPosition();
+      own = { x: position.x / scale, y: position.y / scale };
+    }
+    const fallbacks: Record<AuxiliaryPanelRole, PanelGeometry> = {
+      equalizer: { x: own.x, y: own.y + 116, w: 275, h: 116 },
+      playlist: {
+        x: own.x,
+        y: own.y + 232,
+        w: 275 + playlistExtraWidth * 25,
+        h: 116 + playlistExtraHeight * 29,
+      },
+      milkdrop: { x: own.x + 275, y: own.y, w: 550, h: 406 },
+    };
+    const windows = loadWindowsState();
+    for (const role of ["equalizer", "playlist", "milkdrop"] as const) {
+      const geo = saved[role] ?? fallbacks[role];
+      geometries.set(role, geo);
+      const target = await nativePanelWindow(role);
+      if (!target) continue;
+      await target.setPosition(new LogicalPosition(geo.x, geo.y));
+      if (windows[role]) await target.show();
+    }
+  } catch (error) {
+    console.warn("Winampfy could not restore the panel windows", error);
+  }
+}
+
+// Shuffle/repeat only exist in each window's own Webamp instance, but the
+// playlist window picks the next track. Broadcast every toggle so all windows
+// agree; the flag keeps the synced dispatches from re-broadcasting.
+let syncingTransportModes = false;
+
 const originalDispatch = webamp.store.dispatch;
 webamp.store.dispatch = ((action: Parameters<typeof originalDispatch>[0]) => {
   if (typeof action === "object" && action != null && "type" in action) {
-    if (action.type === "TOGGLE_SHUFFLE") {
-      void invoke("player_set_shuffle", { enabled: !webamp!.isShuffleEnabled() });
+    if (action.type === "TOGGLE_SHUFFLE" || action.type === "TOGGLE_REPEAT") {
+      const shuffle = action.type === "TOGGLE_SHUFFLE" ? !webamp!.isShuffleEnabled() : webamp!.isShuffleEnabled();
+      const repeat = action.type === "TOGGLE_REPEAT" ? !webamp!.isRepeatEnabled() : webamp!.isRepeatEnabled();
+      if (!syncingTransportModes) {
+        void invoke(action.type === "TOGGLE_SHUFFLE" ? "player_set_shuffle" : "player_set_repeat", {
+          enabled: action.type === "TOGGLE_SHUFFLE" ? shuffle : repeat,
+        });
+        void emit("winampfy:transport-modes", { shuffle, repeat });
+      }
     }
-    if (action.type === "TOGGLE_REPEAT") {
-      void invoke("player_set_repeat", { enabled: !webamp!.isRepeatEnabled() });
+    // The player's EQ/PL buttons and the panels' own close buttons manage the
+    // native panel windows; the corresponding panels are closed inside this
+    // Webamp instance and must never be toggled open here.
+    const windowAction = action as { type: string; windowId?: string };
+    if (windowRole === "main" && windowAction.type === "TOGGLE_WINDOW"
+      && (windowAction.windowId === "equalizer" || windowAction.windowId === "playlist")) {
+      togglePanelWindow(windowAction.windowId);
+      return action;
+    }
+    if (windowAction.type === "CLOSE_WINDOW" && windowAction.windowId === windowRole
+      && (windowRole === "equalizer" || windowRole === "playlist" || windowRole === "milkdrop")) {
+      hidePanelWindow(windowRole);
+      return action;
     }
   }
   return originalDispatch(action);
 }) as typeof originalDispatch;
+
+void listen<{ shuffle: boolean; repeat: boolean }>("winampfy:transport-modes", ({ payload }) => {
+  if (!webamp || !payload) return;
+  syncingTransportModes = true;
+  try {
+    if (webamp.isShuffleEnabled() !== payload.shuffle) {
+      webamp.store.dispatch({ type: "TOGGLE_SHUFFLE" });
+    }
+    if (webamp.isRepeatEnabled() !== payload.repeat) {
+      webamp.store.dispatch({ type: "TOGGLE_REPEAT" });
+    }
+  } finally {
+    syncingTransportModes = false;
+  }
+});
 
 let lastScrolledTrackId: number | null = null;
 
@@ -1597,9 +2141,17 @@ function scrollCurrentTrackIntoView() {
 }
 
 let lastSavedPlaylist = JSON.stringify(savedPlaylist);
+let lastSavedPlaylistSize = JSON.stringify(savedPlaylistWindowSize);
 webamp.store.subscribe(() => {
   if (!webamp) return;
   scrollCurrentTrackIntoView();
+  if (windowRole !== "playlist") return;
+  const playlistSize = webamp.store.getState().windows.genWindows.playlist?.size;
+  const serializedSize = JSON.stringify(playlistSize);
+  if (serializedSize !== lastSavedPlaylistSize) {
+    lastSavedPlaylistSize = serializedSize;
+    localStorage.setItem(PLAYLIST_SIZE_STORAGE_KEY, serializedSize);
+  }
   const playlist = webamp
     .getPlaylistTracks()
     .filter((track) => track.url !== "spotify:current")
@@ -1626,121 +2178,360 @@ webamp.store.subscribe(() => {
   }).catch(() => {});
 });
 
-webamp.onClose(() => void invoke("quit_app"));
-webamp.onMinimize(() => getCurrentWindow().hide());
+// Only the player window owns application lifetime and the tray minimize
+// flow; closing an auxiliary panel just hides it.
+if (windowRole === "main") {
+  webamp.onClose(() => void invoke("quit_app"));
+  webamp.onMinimize(() => {
+    void (async () => {
+      // Minimizing hides the whole Winamp group, like classic Winamp's
+      // minimize on the player window.
+      const dialogs = await WebviewWindow.getByLabel("dialogs");
+      await dialogs?.hide();
+      for (const role of ["equalizer", "playlist", "milkdrop"] as const) {
+        const win = await nativePanelWindow(role);
+        if (await win?.isVisible()) await win?.hide();
+      }
+      await getCurrentWindow().hide();
+    })();
+  });
+} else if (isPanelWindow) {
+  // Cmd+W / Alt+F4 must hide the panel, not destroy its webview.
+  void getCurrentWindow().onCloseRequested(async (event) => {
+    event.preventDefault();
+    if (windowRole === "equalizer" || windowRole === "playlist" || windowRole === "milkdrop") {
+      hidePanelWindow(windowRole);
+    }
+  });
+}
 
-void webamp.renderInto(document.querySelector<HTMLElement>("#webamp-container")!).then(() => {
-  const playlistFont = getComputedStyle(
-    document.querySelector<HTMLElement>("#playlist-window")!,
-  ).fontFamily;
-  document.documentElement.style.setProperty("--playlist-font", playlistFont);
-  syncWebampMetadata(latestStatus);
-  openOnboardingDialog();
+// The dialogs window hosts the larger overlays and needs no Webamp instance.
+if (windowRole === "dialogs") {
+  // Cmd+W / Alt+F4 must hide the window, not destroy its webview.
+  void getCurrentWindow().onCloseRequested((event) => {
+    event.preventDefault();
+    void getCurrentWindow().hide();
+  });
+
+  void listen<{ kind: "search" | "playlists" | "skins" | "about" }>("winampfy:open-dialog", async (event) => {
+    await getCurrentWindow().show();
+    await getCurrentWindow().setFocus();
+    const kind = event.payload?.kind;
+    if (kind === "search") {
+      const tracks = await openSpotifySearchDialog();
+      if (tracks && tracks.length) await emit("winampfy:append-tracks", tracks);
+    } else if (kind === "playlists") {
+      const tracks = await openSpotifyPlaylistDialog();
+      if (tracks && tracks.length) await emit("winampfy:replace-tracks", tracks);
+    } else if (kind === "skins") {
+      openSkinExplorerDialog();
+    } else if (kind === "about") {
+      void openAboutDialog();
+    }
+  });
+
+  if (openOnboardingDialog()) void getCurrentWindow().show();
   window.setTimeout(() => void checkForAppUpdate(), 1500);
   window.setInterval(() => void checkForAppUpdate(), UPDATE_CHECK_INTERVAL_MS);
+} else if (webamp) {
+  void webamp.renderInto(document.querySelector<HTMLElement>("#webamp-container")!).then(() => {
+    if (windowRole === "playlist") {
+      const playlistFont = getComputedStyle(
+        document.querySelector<HTMLElement>("#playlist-window")!,
+      ).fontFamily;
+      document.documentElement.style.setProperty("--playlist-font", playlistFont);
+    }
+    syncWebampMetadata(latestStatus);
+    trackOwnGeometry();
+    void restorePanelWindows();
 
-  const injectExploreSkinsMenuItem = () => {
-    const menu = document.querySelector("#webamp-context-menu");
-    if (!menu) return;
-    menu.querySelectorAll<HTMLElement>("li.parent").forEach((parent) => {
-      const isSkinsMenu = [...parent.childNodes].some(
-        (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim() === "Skins",
+    // A skin applied in any window is picked up by reloading the other
+    // windows; the window that applied it keeps its live Webamp instance.
+    void listen<{ source: WindowRole }>("winampfy:skin-changed", (event) => {
+      if (event.payload?.source === windowRole) return;
+      window.location.reload();
+    });
+
+    if (windowRole === "main" || windowRole === "milkdrop") {
+      // The player and Milkdrop windows keep a hidden "current stream" entry
+      // so Webamp has a media target for metadata/playback visualization.
+      const tracks = webamp.getPlaylistTracks();
+      if (tracks.length > 0) {
+        webamp.store.dispatch({
+          type: latestStatus.state === "playing" || latestStatus.state === "loading"
+            ? "PLAY_TRACK"
+            : "BUFFER_TRACK",
+          id: tracks[0].id,
+        });
+      }
+    }
+
+    if (windowRole === "main") {
+
+      const panelButtonContainer = document.querySelector("#main-window .windows");
+      const panelButtonObserver = new MutationObserver(() => syncNativePanelButtons());
+      if (panelButtonContainer) {
+        panelButtonObserver.observe(panelButtonContainer, {
+          attributes: true,
+          subtree: true,
+          attributeFilter: ["class"],
+        });
+      }
+      syncNativePanelButtons();
+      void listen<WindowsState>("winampfy:windows-state", ({ payload }) => {
+        if (payload) syncNativePanelButtons(payload);
+      });
+
+      const injectExploreSkinsMenuItem = () => {
+        const menu = document.querySelector("#webamp-context-menu");
+        if (!menu) return;
+        menu.querySelectorAll<HTMLElement>("li.parent").forEach((parent) => {
+          const isSkinsMenu = [...parent.childNodes].some(
+            (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim() === "Skins",
+          );
+          if (!isSkinsMenu) return;
+          const list = parent.querySelector(":scope > ul");
+          if (!list || list.querySelector(".winampfy-explore-skins")) return;
+          const loadSkin = [...list.children].find((item) => item.textContent?.trim() === "Load Skin...");
+          if (!loadSkin) return;
+          const explore = document.createElement("li");
+          explore.className = "winampfy-explore-skins";
+          explore.textContent = "Explore Skins...";
+          loadSkin.insertAdjacentElement("afterend", explore);
+        });
+      };
+      const skinMenuObserver = new MutationObserver(injectExploreSkinsMenuItem);
+      skinMenuObserver.observe(document.body, { childList: true, subtree: true });
+      injectExploreSkinsMenuItem();
+
+      const syncNativeWindowMenuChecks = () => {
+        const menu = document.querySelector("#webamp-context-menu");
+        if (!menu) return;
+        const windows = loadWindowsState();
+        const checkedByLabel: Record<string, boolean> = {
+          "Main Window": true,
+          Equalizer: windows.equalizer,
+          "Playlist Editor": windows.playlist,
+          Milkdrop: windows.milkdrop,
+        };
+        menu.querySelectorAll<HTMLElement>("li").forEach((item) => {
+          const label = item.textContent?.trim();
+          if (label == null || !(label in checkedByLabel)) return;
+          item.classList.toggle("checked", checkedByLabel[label]);
+        });
+      };
+
+      const injectMilkdropMenuItem = () => {
+        const menu = document.querySelector("#webamp-context-menu");
+        if (!menu) return;
+        if (!menu.querySelector(".winampfy-milkdrop")) {
+          const playlistItem = [...menu.querySelectorAll<HTMLElement>("li")]
+            .find((item) => item.textContent?.trim() === "Playlist Editor");
+          if (!playlistItem) return;
+          const milkdropItem = document.createElement("li");
+          milkdropItem.className = "winampfy-milkdrop";
+          milkdropItem.textContent = "Milkdrop";
+          playlistItem.insertAdjacentElement("afterend", milkdropItem);
+        }
+        syncNativeWindowMenuChecks();
+      };
+      const milkdropMenuObserver = new MutationObserver(injectMilkdropMenuItem);
+      milkdropMenuObserver.observe(document.body, { childList: true, subtree: true });
+      injectMilkdropMenuItem();
+
+      // A webview cannot paint a popup beyond its native window bounds. Keep
+      // the player itself at 275x116, but temporarily give Webamp's portal menu
+      // its original 550x406 canvas so the lower items and submenus are not
+      // clipped. The extra canvas is transparent and disappears with the menu.
+      let contextMenuWindowExpanded = false;
+      const syncContextMenuWindowBounds = () => {
+        const menuIsOpen = document.querySelector("#webamp-context-menu .context-menu") != null;
+        if (menuIsOpen === contextMenuWindowExpanded) return;
+        contextMenuWindowExpanded = menuIsOpen;
+        if (menuIsOpen) {
+          void getCurrentWindow().setSize(new LogicalSize(550, 406));
+          return;
+        }
+        const player = document.querySelector<HTMLElement>("#main-window");
+        const rect = player?.getBoundingClientRect();
+        void getCurrentWindow().setSize(new LogicalSize(rect?.width ?? 275, rect?.height ?? 116));
+      };
+      const contextMenuBoundsObserver = new MutationObserver(syncContextMenuWindowBounds);
+      contextMenuBoundsObserver.observe(document.body, { childList: true, subtree: true });
+      syncContextMenuWindowBounds();
+
+      document.addEventListener("click", (event) => {
+        const target = event.target as HTMLElement;
+        if (target.closest("#webamp-context-menu .winampfy-explore-skins")) {
+          event.preventDefault();
+          void openDialogWindow("skins");
+          return;
+        }
+        if (target.closest("#webamp-context-menu .winampfy-milkdrop")) {
+          event.preventDefault();
+          togglePanelWindow("milkdrop");
+          return;
+        }
+
+        const skinMenuItem = target.closest<HTMLElement>("#webamp-context-menu li");
+        if (!skinMenuItem) return;
+        const label = skinMenuItem.textContent?.trim();
+        const installed = installedSkins.find((skin) => skin.name === label);
+        if (installed) {
+          localStorage.setItem(ACTIVE_SKIN_STORAGE_KEY, installed.url);
+          void emit("winampfy:skin-changed", { source: "main" });
+        } else if (label === "<Base Skin>" || label === "Load Skin...") {
+          localStorage.removeItem(ACTIVE_SKIN_STORAGE_KEY);
+          void emit("winampfy:skin-changed", { source: "main" });
+        }
+      }, true);
+
+      // Like classic Winamp, double-clicking the small spectrum display opens
+      // the full visualization window.
+      document.addEventListener("dblclick", (event) => {
+        if (!(event.target as HTMLElement).closest("#main-window #visualizer")) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        togglePanelWindow("milkdrop");
+      }, true);
+
+      // Webamp's lightning-bolt logo is its built-in About control. Keep that
+      // authentic hotspot and show Winampfy's native-styled About window instead.
+      document.addEventListener("click", (event) => {
+        const target = event.target as HTMLElement;
+        if (!target.closest("#main-window #about")) return;
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void openDialogWindow("about");
+      }, true);
+
+      // The player's EQ and PL buttons toggle the dedicated native windows
+      // instead of panels inside this window.
+      document.addEventListener("click", (event) => {
+        const target = event.target as HTMLElement;
+        const toggle = target.closest<HTMLElement>("#equalizer-button, #playlist-button");
+        if (!toggle) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        togglePanelWindow(toggle.id === "equalizer-button" ? "equalizer" : "playlist");
+      }, true);
+
+      // This window's playlist only holds the placeholder entry, so Webamp's
+      // own next/previous would have nothing to advance to. Resolve and load
+      // the real persisted queue directly.
+      document.addEventListener("click", (event) => {
+        const target = event.target as HTMLElement;
+        const transport = target.closest<HTMLElement>(
+          "#main-window .actions #next, #main-window .actions #previous",
+        );
+        if (!transport) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void advanceTransport(transport.id === "next" ? "next" : "previous", 1);
+      }, true);
+
+      document.addEventListener("keydown", (event) => {
+        if (event.ctrlKey || event.altKey) return;
+        if (event.target instanceof Element
+          && ["input", "textarea", "select"].includes(event.target.tagName.toLowerCase())) return;
+        // Webamp's own next/previous hotkeys: B, Z and numpad 1/3/4/6.
+        const transport: ["next" | "previous", number] | null = event.keyCode === 66 || event.keyCode === 102
+          ? ["next", 1]
+          : event.keyCode === 90 || event.keyCode === 100
+            ? ["previous", 1]
+            : event.keyCode === 99
+              ? ["next", 10]
+              : event.keyCode === 97
+                ? ["previous", 10]
+                : null;
+        if (!transport) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void advanceTransport(...transport);
+      }, true);
+
+    }
+
+    if (windowRole === "playlist") {
+      // In Winamp the ADD button normally opens a second tiny menu before URL
+      // can be selected. Winampfy has one add source, so a single ADD click
+      // opens the Spotify search directly and appends the chosen tracks.
+      document.addEventListener("click", (event) => {
+        const target = event.target as HTMLElement;
+        const addButton = target.closest<HTMLElement>("#playlist-add-menu");
+        if (!addButton || target.closest("#playlist-add-menu ul")) return;
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void openDialogWindow("search");
+      }, true);
+
+      // LIST OPTS → LOAD LIST normally opens a local file picker. Winampfy
+      // uses that authentic Winamp control as the entry point for playlists.
+      document.addEventListener("click", (event) => {
+        const target = event.target as HTMLElement;
+        const loadListButton = target.closest<HTMLElement>("#playlist-list-menu .load-list");
+        if (!loadListButton) return;
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void openDialogWindow("playlists");
+      }, true);
+
+      void listen<PlaylistInputTrack[]>("winampfy:append-tracks", (event) => {
+        if (!event.payload?.length) return;
+        removeConnectionPlaceholder();
+        webamp?.appendTracks(event.payload);
+      });
+      void listen<PlaylistInputTrack[]>("winampfy:replace-tracks", (event) => {
+        if (event.payload?.length) replacePlaylistTracks(event.payload);
+      });
+
+    }
+
+    // Auxiliary close buttons hide their native window while the
+    // panel itself stays alive inside this instance, ready to be reshown.
+    if (windowRole === "equalizer" || windowRole === "playlist" || windowRole === "milkdrop") {
+      document.addEventListener("click", (event) => {
+        const target = event.target as HTMLElement;
+        const closeButton = target.closest<HTMLElement>(
+          windowRole === "equalizer"
+            ? "#equalizer-close"
+            : windowRole === "playlist"
+              ? "#playlist-close-button"
+              : ".gen-close",
+        );
+        if (!closeButton) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        hidePanelWindow(windowRole);
+      }, true);
+    }
+
+    document.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+
+      const target = event.target as HTMLElement;
+      const titleBar = target.closest<HTMLElement>(
+        "#main-window #title-bar, #equalizer-window .title-bar, " +
+        "#playlist-window .playlist-top, .gen-window .gen-top",
       );
-      if (!isSkinsMenu) return;
-      const list = parent.querySelector(":scope > ul");
-      if (!list || list.querySelector(".winampfy-explore-skins")) return;
-      const loadSkin = [...list.children].find((item) => item.textContent?.trim() === "Load Skin...");
-      if (!loadSkin) return;
-      const explore = document.createElement("li");
-      explore.className = "winampfy-explore-skins";
-      explore.textContent = "Explore Skins...";
-      loadSkin.insertAdjacentElement("afterend", explore);
-    });
-  };
-  const skinMenuObserver = new MutationObserver(injectExploreSkinsMenuItem);
-  skinMenuObserver.observe(document.body, { childList: true, subtree: true });
-  injectExploreSkinsMenuItem();
+      if (!titleBar) return;
 
-  document.addEventListener("click", (event) => {
-    const target = event.target as HTMLElement;
-    if (target.closest("#webamp-context-menu .winampfy-explore-skins")) {
+      const isWindowControl = target.closest(
+        "#option-context, #option, #minimize, #shade, #close, " +
+        "#equalizer-close, #equalizer-shade, " +
+        "#playlist-close-button, #playlist-shade-button, .gen-close, #gen-resize-target",
+      );
+      if (isWindowControl) return;
+
+      // Every title bar is native chrome for its own window. The Rust side
+      // carries the open sibling panels whenever the player window is dragged;
+      // the equalizer and playlist windows always move on their own.
       event.preventDefault();
-      openSkinExplorerDialog();
-      return;
-    }
-
-    const skinMenuItem = target.closest<HTMLElement>("#webamp-context-menu li");
-    if (!skinMenuItem) return;
-    const label = skinMenuItem.textContent?.trim();
-    const installed = installedSkins.find((skin) => skin.name === label);
-    if (installed) {
-      localStorage.setItem(ACTIVE_SKIN_STORAGE_KEY, installed.url);
-    } else if (label === "<Base Skin>" || label === "Load Skin...") {
-      localStorage.removeItem(ACTIVE_SKIN_STORAGE_KEY);
-    }
-  }, true);
-
-  // Webamp's lightning-bolt logo is its built-in About control. Keep that
-  // authentic hotspot and show Winampfy's native-styled About window instead.
-  document.addEventListener("click", (event) => {
-    const target = event.target as HTMLElement;
-    if (!target.closest("#main-window #about")) return;
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    void openAboutDialog();
-  }, true);
-
-  // In Winamp the ADD button normally opens a second tiny menu before URL can
-  // be selected. Winampfy has one add source, so a single ADD click opens the
-  // Spotify search directly and appends the chosen tracks.
-  document.addEventListener("click", (event) => {
-    const target = event.target as HTMLElement;
-    const addButton = target.closest<HTMLElement>("#playlist-add-menu");
-    if (!addButton || target.closest("#playlist-add-menu ul")) return;
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    void openSpotifySearchDialog().then((tracks) => {
-      if (tracks?.length) webamp?.appendTracks(tracks);
-    });
-  }, true);
-
-  // LIST OPTS → LOAD LIST normally opens a local file picker. Winampfy uses
-  // that authentic Winamp control as the entry point for Spotify playlists.
-  document.addEventListener("click", (event) => {
-    const target = event.target as HTMLElement;
-    const loadListButton = target.closest<HTMLElement>("#playlist-list-menu .load-list");
-    if (!loadListButton) return;
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    void openSpotifyPlaylistDialog().then((tracks) => {
-      if (tracks?.length) replacePlaylistTracks(tracks);
-    });
-  }, true);
-
-  document.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-
-    const target = event.target as HTMLElement;
-    const titleBar = target.closest<HTMLElement>(
-      "#main-window #title-bar, #equalizer-window .title-bar, #playlist-window .playlist-top",
-    );
-    if (!titleBar) return;
-
-    const isWindowControl = target.closest(
-      "#option-context, #option, #minimize, #shade, #close, " +
-      "#equalizer-close, #equalizer-shade, " +
-      "#playlist-close-button, #playlist-shade-button",
-    );
-    if (isWindowControl) return;
-
-    // Webamp normally moves its panels inside a virtual desktop. In the
-    // desktop app every title bar instead acts as native macOS/Windows chrome.
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    void getCurrentWindow().startDragging();
-  }, true);
-
-});
+      event.stopImmediatePropagation();
+      void getCurrentWindow().startDragging();
+    }, true);
+  });
+}
