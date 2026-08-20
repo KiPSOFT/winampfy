@@ -2418,16 +2418,21 @@ if (windowRole === "dialogs") {
       }, true);
 
       // This window's playlist only holds the placeholder entry, so Webamp's
-      // own next/previous would have nothing to advance to. Resolve and load
-      // the real persisted queue directly.
+      // own transport handlers cannot operate on the real persisted queue.
+      // Stop is also handled explicitly so it always reaches the native
+      // player and resets the playhead instead of behaving like Pause.
       document.addEventListener("click", (event) => {
         const target = event.target as HTMLElement;
         const transport = target.closest<HTMLElement>(
-          "#main-window .actions #next, #main-window .actions #previous",
+          "#main-window .actions #next, #main-window .actions #previous, #main-window .actions #stop",
         );
         if (!transport) return;
         event.preventDefault();
         event.stopImmediatePropagation();
+        if (transport.id === "stop") {
+          webamp.store.dispatch({ type: "STOP" });
+          return;
+        }
         void advanceTransport(transport.id === "next" ? "next" : "previous", 1);
       }, true);
 

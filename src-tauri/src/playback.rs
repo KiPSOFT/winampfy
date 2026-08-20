@@ -690,13 +690,19 @@ async fn watch_player_events(
                 current.track_sequence = current.track_sequence.wrapping_add(1);
                 current.message = "Parça yüklendi".into();
             }
-            PlayerEvent::Playing { position_ms, .. }
-            | PlayerEvent::PositionChanged { position_ms, .. }
-            | PlayerEvent::PositionCorrection { position_ms, .. }
-            | PlayerEvent::Seeked { position_ms, .. } => {
+            PlayerEvent::Playing { position_ms, .. } => {
                 current.state = "playing".into();
                 current.position_ms = Some(position_ms);
                 current.message = "Çalıyor".into();
+            }
+            PlayerEvent::PositionChanged { position_ms, .. }
+            | PlayerEvent::PositionCorrection { position_ms, .. }
+            | PlayerEvent::Seeked { position_ms, .. } => {
+                // Position notifications describe the playhead, not whether
+                // audio is playing. Treating a seek/correction after Pause as
+                // Playing made the guardian restart deliberately stopped
+                // tracks. The explicit Playing/Paused events own that state.
+                current.position_ms = Some(position_ms);
             }
             PlayerEvent::Paused { position_ms, .. } => {
                 current.state = "paused".into();
@@ -801,7 +807,10 @@ pub fn player_pause(state: State<'_, PlayerState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn player_stop(state: State<'_, PlayerState>) -> Result<(), String> {
-    with_spirc(&state, Spirc::pause)
+    with_spirc(&state, |spirc| {
+        spirc.pause()?;
+        spirc.set_position_ms(0)
+    })
 }
 
 #[tauri::command]
